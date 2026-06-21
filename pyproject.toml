@@ -1,0 +1,90 @@
+[project]
+name = "smart-beauty-resize-preprocessor"
+version = "0.1.0"
+description = "Bootstrap package for smart beauty resize preprocessing utilities"
+authors = [
+    { name = "Koray_Aydin", email = "138696794+KorayAydin3k@users.noreply.github.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.4.6",
+    "opencv-python-headless>=4.13.0.92",
+    "pillow>=12.2.0",
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
+    "typer>=0.26.7",
+]
+
+[project.scripts]
+smart-beauty-resize-preprocessor = "smart_beauty_resize.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.11.23,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "smart_beauty_resize"
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.155.7",
+    "mypy>=2.1.0",
+    "pre-commit>=4.6.0",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.18",
+    "types-pyyaml>=6.0.12.20260518",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = [
+    ".venv",
+    "build",
+    "dist",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "__pycache__",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "I",
+    "UP",
+    "B",
+    "N",
+    "ANN",
+    "ARG",
+    "RSE",
+    "RET",
+    "SIM",
+]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/smart_beauty_resize"]
+strict = true
+warn_unused_ignores = true
+show_error_codes = true
+pretty = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q --strict-markers"
+markers = [
+    "integration: integration tests",
+    "property: property-based tests",
+]
+
+[tool.coverage.run]
+source = ["smart_beauty_resize"]
+branch = true
+omit = ["*/tests/*", "*/__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
