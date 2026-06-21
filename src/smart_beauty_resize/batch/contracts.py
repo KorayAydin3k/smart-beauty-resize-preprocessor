@@ -514,3 +514,47 @@ class BatchRunSummary:
         if self.total_discovered == 0:
             return 0.0
         return (self.successful / self.total_discovered) * 100.0
+
+
+@dataclass(frozen=True, slots=True)
+class BatchExecutionResult:
+    """Immutable result of one completed batch-processing execution."""
+
+    records: tuple[ImageProcessingRecord, ...]
+    summary: BatchRunSummary
+
+    def __post_init__(self) -> None:
+        if type(self.records) is not tuple:
+            raise BatchConfigurationError("records must be a tuple of ImageProcessingRecord values")
+
+        if any(not isinstance(record, ImageProcessingRecord) for record in self.records):
+            raise BatchConfigurationError("records must contain only ImageProcessingRecord values")
+
+        if not isinstance(self.summary, BatchRunSummary):
+            raise BatchConfigurationError("summary must be a BatchRunSummary")
+
+        if len(self.records) != self.summary.total_discovered:
+            raise BatchConfigurationError("record count must equal summary.total_discovered")
+
+        successful = sum(record.status is ProcessingStatus.SUCCESS for record in self.records)
+        failed = sum(record.status is ProcessingStatus.FAILED for record in self.records)
+        skipped = sum(record.status is ProcessingStatus.SKIPPED for record in self.records)
+
+        if successful != self.summary.successful:
+            raise BatchConfigurationError("successful record count must match summary")
+
+        if failed != self.summary.failed:
+            raise BatchConfigurationError("failed record count must match summary")
+
+        if skipped != self.summary.skipped:
+            raise BatchConfigurationError("skipped record count must match summary")
+
+        for record in self.records:
+            if record.config_sha256 != self.summary.config_sha256:
+                raise BatchConfigurationError("all records must use the summary config_sha256")
+
+            if record.target_width != self.summary.target_width:
+                raise BatchConfigurationError("all records must use the summary target_width")
+
+            if record.target_height != self.summary.target_height:
+                raise BatchConfigurationError("all records must use the summary target_height")
