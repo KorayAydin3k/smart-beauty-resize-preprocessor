@@ -16,6 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
+smart-beauty-resize = "smart_beauty_resize.cli:main"
 smart-beauty-resize-preprocessor = "smart_beauty_resize.cli:main"
 
 [build-system]

@@ -35,6 +35,34 @@ class ImageDecodeError(SmartBeautyResizeError):
     """Raised when an image file cannot be decoded into a valid RGB array."""
 
 
+class BatchConfigurationError(SmartBeautyResizeError):
+    """Raised when batch-processing configuration is invalid."""
+
+
+class ProvenanceError(SmartBeautyResizeError):
+    """Raised when provenance or hashing operations fail."""
+
+
+class ManifestSerializationError(SmartBeautyResizeError):
+    """Raised when manifest data cannot be serialized safely."""
+
+
+class DiscoveryError(SmartBeautyResizeError):
+    """Raised when deterministic input-file discovery fails."""
+
+
+class OutputWriteError(SmartBeautyResizeError):
+    """Raised when a processed output cannot be written safely."""
+
+
+class OutputExistsError(OutputWriteError):
+    """Raised when an output exists and overwrite is disabled."""
+
+
+class ManifestWriteError(SmartBeautyResizeError):
+    """Raised when batch manifest artifacts cannot be written safely."""
+
+
 Matrix = tuple[
     tuple[float, float, float],
     tuple[float, float, float],
