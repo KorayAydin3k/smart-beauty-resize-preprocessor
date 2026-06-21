@@ -59,6 +59,10 @@ class OutputExistsError(OutputWriteError):
     """Raised when an output exists and overwrite is disabled."""
 
 
+class ManifestWriteError(SmartBeautyResizeError):
+    """Raised when batch manifest artifacts cannot be written safely."""
+
+
 Matrix = tuple[
     tuple[float, float, float],
     tuple[float, float, float],
