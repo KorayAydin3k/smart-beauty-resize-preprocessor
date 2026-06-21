@@ -51,6 +51,14 @@ class DiscoveryError(SmartBeautyResizeError):
     """Raised when deterministic input-file discovery fails."""
 
 
+class OutputWriteError(SmartBeautyResizeError):
+    """Raised when a processed output cannot be written safely."""
+
+
+class OutputExistsError(OutputWriteError):
+    """Raised when an output exists and overwrite is disabled."""
+
+
 Matrix = tuple[
     tuple[float, float, float],
     tuple[float, float, float],
