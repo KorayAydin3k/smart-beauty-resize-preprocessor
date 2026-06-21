@@ -1,0 +1,194 @@
+{
+  "identity": {
+    "config": {
+      "allow_upscale": true,
+      "max_upscale_factor": 1.0,
+      "padding_value": [
+        5,
+        5,
+        5
+      ],
+      "target_height": 4,
+      "target_width": 6
+    },
+    "expected_filename": "identity.png",
+    "expected_sha256": "eb882b6e8228192503aae58a74f72fcfe67a2d4f222aa3916b77f9250216b8de",
+    "interpolation": "IDENTITY",
+    "output_dtype": "uint8",
+    "output_shape": [
+      4,
+      6,
+      3
+    ],
+    "plan": {
+      "pad_bottom": 0,
+      "pad_left": 0,
+      "pad_right": 0,
+      "pad_top": 0,
+      "resized_height": 4,
+      "resized_width": 6
+    },
+    "source_filename": "identity.png",
+    "source_sha256": "eb882b6e8228192503aae58a74f72fcfe67a2d4f222aa3916b77f9250216b8de"
+  },
+  "landscape_downscale": {
+    "config": {
+      "allow_upscale": true,
+      "max_upscale_factor": 2.0,
+      "padding_value": [
+        0,
+        0,
+        0
+      ],
+      "target_height": 8,
+      "target_width": 8
+    },
+    "expected_filename": "landscape_downscale.png",
+    "expected_sha256": "2e4e4f9f61f2f7d42986baa888643a900437c0e2865e3a94faed428bf28a6cc6",
+    "interpolation": "INTER_AREA",
+    "output_dtype": "uint8",
+    "output_shape": [
+      8,
+      8,
+      3
+    ],
+    "plan": {
+      "pad_bottom": 1,
+      "pad_left": 0,
+      "pad_right": 0,
+      "pad_top": 1,
+      "resized_height": 6,
+      "resized_width": 8
+    },
+    "source_filename": "landscape_downscale.png",
+    "source_sha256": "62fbb8166db826ae172a2162d8a6f219a88731b23b145f485179b2e8883eced1"
+  },
+  "landscape_upscale": {
+    "config": {
+      "allow_upscale": true,
+      "max_upscale_factor": 2.0,
+      "padding_value": [
+        10,
+        20,
+        30
+      ],
+      "target_height": 8,
+      "target_width": 8
+    },
+    "expected_filename": "landscape_upscale.png",
+    "expected_sha256": "1c61bfe8e7a39bf2968a77474cba019205adce24d214bf9233fe8bd2545531d3",
+    "interpolation": "INTER_CUBIC",
+    "output_dtype": "uint8",
+    "output_shape": [
+      8,
+      8,
+      3
+    ],
+    "plan": {
+      "pad_bottom": 3,
+      "pad_left": 0,
+      "pad_right": 0,
+      "pad_top": 2,
+      "resized_height": 3,
+      "resized_width": 8
+    },
+    "source_filename": "landscape_upscale.png",
+    "source_sha256": "8cff488f3e95e1d7f01e9429c0888b778052ea9220e27e569cb8cf11c1b6ee7a"
+  },
+  "odd_dimension_rounding": {
+    "config": {
+      "allow_upscale": true,
+      "max_upscale_factor": 2.0,
+      "padding_value": [
+        127,
+        127,
+        127
+      ],
+      "target_height": 7,
+      "target_width": 9
+    },
+    "expected_filename": "odd_dimension_rounding.png",
+    "expected_sha256": "ef1e6faa2f35fbaea96b044aaed7f8d17de16a4e06ad84f62beeb29a694957f7",
+    "interpolation": "INTER_CUBIC",
+    "output_dtype": "uint8",
+    "output_shape": [
+      7,
+      9,
+      3
+    ],
+    "plan": {
+      "pad_bottom": 1,
+      "pad_left": 0,
+      "pad_right": 0,
+      "pad_top": 1,
+      "resized_height": 5,
+      "resized_width": 9
+    },
+    "source_filename": "odd_dimension_rounding.png",
+    "source_sha256": "6697cd00b8c84c6bfe76002db5c44622a5080bb2bee0d91ea165b4b965b1f64c"
+  },
+  "portrait_upscale": {
+    "config": {
+      "allow_upscale": true,
+      "max_upscale_factor": 2.0,
+      "padding_value": [
+        30,
+        20,
+        10
+      ],
+      "target_height": 8,
+      "target_width": 8
+    },
+    "expected_filename": "portrait_upscale.png",
+    "expected_sha256": "3ac8ad8f0836fbdd7c811fae820362fa37591f0f1cfc8fec124d0d6522ce511e",
+    "interpolation": "INTER_CUBIC",
+    "output_dtype": "uint8",
+    "output_shape": [
+      8,
+      8,
+      3
+    ],
+    "plan": {
+      "pad_bottom": 0,
+      "pad_left": 2,
+      "pad_right": 3,
+      "pad_top": 0,
+      "resized_height": 8,
+      "resized_width": 3
+    },
+    "source_filename": "portrait_upscale.png",
+    "source_sha256": "69d400e62489aeb2555c5afa0405160b898528a5f8cf17de6488a52ca29ce9d0"
+  },
+  "upscale_disabled": {
+    "config": {
+      "allow_upscale": false,
+      "max_upscale_factor": 2.0,
+      "padding_value": [
+        200,
+        201,
+        202
+      ],
+      "target_height": 8,
+      "target_width": 8
+    },
+    "expected_filename": "upscale_disabled.png",
+    "expected_sha256": "bc04f2ec45d55cdfb74f79e594bd5e0b4dcef400335b95111c97baf3fc0ef098",
+    "interpolation": "IDENTITY",
+    "output_dtype": "uint8",
+    "output_shape": [
+      8,
+      8,
+      3
+    ],
+    "plan": {
+      "pad_bottom": 2,
+      "pad_left": 2,
+      "pad_right": 2,
+      "pad_top": 2,
+      "resized_height": 4,
+      "resized_width": 4
+    },
+    "source_filename": "upscale_disabled.png",
+    "source_sha256": "9f06bb2d69ea897b4fbc340fa287802125af309b26f86c9eb5f89eae874f5cde"
+  }
+}
