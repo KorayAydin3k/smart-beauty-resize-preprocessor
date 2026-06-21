@@ -63,3 +63,6 @@ data/
 outputs/
 artifacts/
 cache/
+
+# Local performance benchmark reports
+benchmarks/results/*.json
