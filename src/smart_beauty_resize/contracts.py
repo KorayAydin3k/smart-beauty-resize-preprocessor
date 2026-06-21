@@ -3,8 +3,15 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
+from numpy.typing import NDArray
 
-class ResizeConfigurationError(ValueError):
+
+class SmartBeautyResizeError(Exception):
+    """Base exception for all package-specific errors."""
+
+
+class ResizeConfigurationError(SmartBeautyResizeError):
     """Base error for invalid resize configuration."""
 
 
@@ -14,6 +21,18 @@ class InvalidImageDimensionsError(ResizeConfigurationError):
 
 class ExcessiveUpscaleError(ResizeConfigurationError):
     """Raised when an upscale exceeds the configured limit."""
+
+
+class InvalidImageError(SmartBeautyResizeError):
+    """Raised when a direct image payload is invalid."""
+
+
+class InvalidMaskError(SmartBeautyResizeError):
+    """Raised when a mask payload is invalid."""
+
+
+class ImageDecodeError(SmartBeautyResizeError):
+    """Raised when an image file cannot be decoded into a valid RGB array."""
 
 
 Matrix = tuple[
@@ -87,3 +106,19 @@ class ResizePlan:
     was_upscaled: bool
     forward_matrix: Matrix
     inverse_matrix: Matrix
+
+
+@dataclass(slots=True)
+class ResizeResult:
+    """Container for a deterministic pixel resize result.
+
+    The arrays are returned in contiguous layout and are intended to be treated
+    as read-only by callers; the object itself is not frozen so the contract
+    can remain explicit about the mutable NumPy payloads.
+    """
+
+    image: NDArray[np.uint8]
+    plan: ResizePlan
+    valid_region_mask: NDArray[np.uint8]
+    mask: np.ndarray | None
+    interpolation: str
