@@ -47,6 +47,10 @@ class ManifestSerializationError(SmartBeautyResizeError):
     """Raised when manifest data cannot be serialized safely."""
 
 
+class DiscoveryError(SmartBeautyResizeError):
+    """Raised when deterministic input-file discovery fails."""
+
+
 Matrix = tuple[
     tuple[float, float, float],
     tuple[float, float, float],
