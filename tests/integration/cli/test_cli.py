@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +12,12 @@ from smart_beauty_resize.cli import app
 from smart_beauty_resize.provenance import RUNS_DIRECTORY_NAME
 
 runner = CliRunner()
+
+_ANSI_ESCAPE_PATTERN = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _strip_ansi(value: str) -> str:
+    return _ANSI_ESCAPE_PATTERN.sub("", value)
 
 
 def _write_image(
@@ -58,23 +65,34 @@ def _run_directories(output_dir: Path) -> list[Path]:
 
 
 def test_cli_help() -> None:
-    result = runner.invoke(app, ["--help"])
+    result = runner.invoke(
+        app,
+        ["--help"],
+        color=False,
+        terminal_width=160,
+    )
+
+    output = _strip_ansi(result.output)
 
     assert result.exit_code == 0
-    assert "batch" in result.output.lower()
+    assert "batch" in output.lower()
 
 
 def test_batch_help() -> None:
     result = runner.invoke(
         app,
         ["batch", "--help"],
+        color=False,
+        terminal_width=160,
     )
 
+    output = _strip_ansi(result.output)
+
     assert result.exit_code == 0
-    assert "--input-dir" in result.output
-    assert "--output-dir" in result.output
-    assert "--target-width" in result.output
-    assert "--target-height" in result.output
+    assert "--input-dir" in output
+    assert "--output-dir" in output
+    assert "--target-width" in output
+    assert "--target-height" in output
 
 
 def test_successful_batch_command(
