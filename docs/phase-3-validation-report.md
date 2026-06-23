@@ -51,7 +51,7 @@ Six committed golden cases cover:
 Each case validates:
 
 - exact output pixels;
-- deterministic PNG output;
+- deterministic PNG encoding within a single runtime;
 - source and expected SHA-256 hashes;
 - resized dimensions;
 - padding geometry;
@@ -60,6 +60,12 @@ Each case validates:
 - source-array immutability.
 
 Fixture regeneration was also verified to be idempotent.
+
+Cross-platform acceptance is based on decoded RGB pixel equality. Compressed
+PNG container bytes may differ between operating systems because the underlying
+compression implementation can vary, even when the decoded image is identical.
+Byte-level determinism is still required across repeated writes within the same
+runtime.
 
 ## 4. Resize-kernel benchmark
 

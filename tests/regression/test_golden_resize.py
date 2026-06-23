@@ -71,7 +71,22 @@ def test_resize_matches_committed_golden_output(
         overwrite=False,
     )
 
-    assert actual_path.read_bytes() == expected_path.read_bytes()
+    expected_image = decode_image(expected_path)
+    actual_image = decode_image(actual_path)
+
+    # Compressed PNG bytes may differ across operating systems even when the
+    # decoded RGB pixels are identical.
+    assert np.array_equal(actual_image, expected_image)
+
+    repeated_path = write_png_atomic(
+        image=resize_result.image,
+        output_root=tmp_path / "repeat",
+        relative_path=Path(f"{case_name}.png"),
+        overwrite=False,
+    )
+
+    # Repeated writes within the same runtime must remain byte-deterministic.
+    assert sha256_file(repeated_path) == sha256_file(actual_path)
 
     assert sha256_file(actual_path) == case["expected_sha256"]
 
