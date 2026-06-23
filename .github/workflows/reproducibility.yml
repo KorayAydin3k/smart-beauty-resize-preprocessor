@@ -1,0 +1,82 @@
+name: Reproducibility
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reproducibility-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reproducibility:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: macos-latest
+            python: "3.11"
+          - os: windows-latest
+            python: "3.11"
+
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+
+      - name: Install Python
+        run: uv python install ${{ matrix.python }}
+
+      - name: Install project
+        run: >
+          uv sync
+          --locked
+          --all-groups
+          --python ${{ matrix.python }}
+
+      - name: Show environment
+        run: >
+          uv run
+          --python ${{ matrix.python }}
+          python -c
+          "import platform, sys; print(sys.version); print(platform.platform())"
+
+      - name: Run golden regression tests
+        run: >
+          uv run
+          --python ${{ matrix.python }}
+          pytest
+          tests/regression/test_golden_resize.py
+          -v
+
+      - name: Run cross-environment reproducibility tests
+        run: >
+          uv run
+          --python ${{ matrix.python }}
+          pytest
+          tests/reproducibility/test_cross_environment_reproducibility.py
+          -v

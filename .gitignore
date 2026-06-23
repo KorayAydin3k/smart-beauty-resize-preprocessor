@@ -63,3 +63,6 @@ data/
 outputs/
 artifacts/
 cache/
+
+# Local benchmark reports
+benchmarks/results/

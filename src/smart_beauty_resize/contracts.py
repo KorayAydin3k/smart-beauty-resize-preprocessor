@@ -11,7 +11,7 @@ class SmartBeautyResizeError(Exception):
     """Base exception for all package-specific errors."""
 
 
-class ResizeConfigurationError(SmartBeautyResizeError):
+class ResizeConfigurationError(SmartBeautyResizeError, ValueError):
     """Base error for invalid resize configuration."""
 
 
