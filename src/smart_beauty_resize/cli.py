@@ -13,8 +13,11 @@ from smart_beauty_resize.batch import (
     ProcessingStatus,
     process_batch,
 )
+from smart_beauty_resize.config import load_preprocessing_profile
 from smart_beauty_resize.contracts import (
+    ProfileConfigurationError,
     ResizeConfig,
+    ResizeConfigurationError,
     SmartBeautyResizeError,
 )
 from smart_beauty_resize.provenance import (
@@ -35,6 +38,63 @@ app = typer.Typer(
 
 console = Console()
 error_console = Console(stderr=True)
+
+
+def _resolve_resize_config(
+    *,
+    profile: Path | None,
+    target_width: int | None,
+    target_height: int | None,
+    allow_upscale: bool | None,
+    max_upscale_factor: float | None,
+    padding_red: int | None,
+    padding_green: int | None,
+    padding_blue: int | None,
+) -> ResizeConfig:
+    """Resolve exactly one resize configuration source.
+
+    A versioned profile and manually supplied resize options are intentionally
+    mutually exclusive. This keeps configuration provenance unambiguous while
+    preserving the original CLI behavior when no profile is supplied.
+    """
+    manual_options = {
+        "--target-width": target_width,
+        "--target-height": target_height,
+        "--allow-upscale/--no-allow-upscale": allow_upscale,
+        "--max-upscale-factor": max_upscale_factor,
+        "--padding-red": padding_red,
+        "--padding-green": padding_green,
+        "--padding-blue": padding_blue,
+    }
+
+    if profile is not None:
+        provided_manual_options = [
+            option_name for option_name, value in manual_options.items() if value is not None
+        ]
+        if provided_manual_options:
+            options = ", ".join(provided_manual_options)
+            raise ProfileConfigurationError(
+                f"--profile cannot be combined with manual resize options: {options}"
+            )
+
+        return load_preprocessing_profile(profile).resize_config
+
+    if target_width is None or target_height is None:
+        raise ResizeConfigurationError(
+            "--target-width and --target-height are required when --profile is not used"
+        )
+
+    return ResizeConfig(
+        target_width=target_width,
+        target_height=target_height,
+        allow_upscale=True if allow_upscale is None else allow_upscale,
+        max_upscale_factor=(1.5 if max_upscale_factor is None else max_upscale_factor),
+        padding_value=(
+            127 if padding_red is None else padding_red,
+            127 if padding_green is None else padding_green,
+            127 if padding_blue is None else padding_blue,
+        ),
+    )
 
 
 def _build_summary_table(
@@ -127,61 +187,71 @@ def batch_command(
             help="Directory for processed images and run artifacts.",
         ),
     ],
+    profile: Annotated[
+        Path | None,
+        typer.Option(
+            "--profile",
+            help=(
+                "Versioned YAML preprocessing profile. Cannot be combined "
+                "with manual resize options."
+            ),
+        ),
+    ] = None,
     target_width: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--target-width",
-            help="Target canvas width in pixels.",
+            help="Target canvas width in pixels when --profile is not used.",
         ),
-    ],
+    ] = None,
     target_height: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--target-height",
-            help="Target canvas height in pixels.",
+            help="Target canvas height in pixels when --profile is not used.",
         ),
-    ],
+    ] = None,
     allow_upscale: Annotated[
-        bool,
+        bool | None,
         typer.Option(
             "--allow-upscale/--no-allow-upscale",
-            help="Permit source images to be enlarged.",
+            help="Permit source images to be enlarged in manual configuration mode.",
         ),
-    ] = True,
+    ] = None,
     max_upscale_factor: Annotated[
-        float,
+        float | None,
         typer.Option(
             "--max-upscale-factor",
-            help="Maximum permitted enlargement factor.",
+            help="Maximum permitted enlargement factor in manual configuration mode.",
         ),
-    ] = 1.5,
+    ] = None,
     padding_red: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--padding-red",
             min=0,
             max=255,
-            help="Red channel value for constant padding.",
+            help="Red channel value for constant padding in manual configuration mode.",
         ),
-    ] = 127,
+    ] = None,
     padding_green: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--padding-green",
             min=0,
             max=255,
-            help="Green channel value for constant padding.",
+            help="Green channel value for constant padding in manual configuration mode.",
         ),
-    ] = 127,
+    ] = None,
     padding_blue: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--padding-blue",
             min=0,
             max=255,
-            help="Blue channel value for constant padding.",
+            help="Blue channel value for constant padding in manual configuration mode.",
         ),
-    ] = 127,
+    ] = None,
     overwrite: Annotated[
         bool,
         typer.Option(
@@ -214,16 +284,15 @@ def batch_command(
 ) -> None:
     """Resize a directory of images and persist an auditable run manifest."""
     try:
-        resize_config = ResizeConfig(
+        resize_config = _resolve_resize_config(
+            profile=profile,
             target_width=target_width,
             target_height=target_height,
             allow_upscale=allow_upscale,
             max_upscale_factor=max_upscale_factor,
-            padding_value=(
-                padding_red,
-                padding_green,
-                padding_blue,
-            ),
+            padding_red=padding_red,
+            padding_green=padding_green,
+            padding_blue=padding_blue,
         )
 
         batch_config = BatchConfig(
