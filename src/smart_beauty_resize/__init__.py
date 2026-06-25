@@ -13,6 +13,7 @@ from smart_beauty_resize.config import (
 from smart_beauty_resize.contracts import (
     ExcessiveUpscaleError,
     ImageDecodeError,
+    InputPolicyViolationError,
     InvalidImageDimensionsError,
     InvalidImageError,
     InvalidMaskError,
@@ -31,8 +32,10 @@ from smart_beauty_resize.geometry import (
 from smart_beauty_resize.io import (
     DecodedImage,
     ImageDecodeMetadata,
+    InputPolicy,
     decode_image,
     decode_image_with_metadata,
+    enforce_input_policy,
 )
 
 __all__ = [
@@ -48,14 +51,17 @@ __all__ = [
     "InvalidImageError",
     "InvalidMaskError",
     "ImageDecodeError",
+    "InputPolicyViolationError",
     "ProfileConfigurationError",
     "round_half_up_positive",
     "calculate_letterbox_plan",
     "apply_matrix_to_point",
     "ImageDecodeMetadata",
     "DecodedImage",
+    "InputPolicy",
     "decode_image",
     "decode_image_with_metadata",
+    "enforce_input_policy",
     "resize_sample",
     "profile_from_mapping",
     "load_preprocessing_profile",

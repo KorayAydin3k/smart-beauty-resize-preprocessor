@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from smart_beauty_resize import ImageDecodeMetadata
+from smart_beauty_resize import ImageDecodeMetadata, InputPolicy
 from smart_beauty_resize.batch import (
     BatchRunSummary,
     ImageProcessingRecord,
@@ -238,6 +238,20 @@ def test_record_rejects_invalid_decode_metadata() -> None:
         )
 
 
+
+def test_record_and_summary_reject_invalid_input_policy() -> None:
+    with pytest.raises(BatchConfigurationError, match="input_policy"):
+        replace(
+            _success_record(),
+            input_policy="audit_only",  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(BatchConfigurationError, match="input_policy"):
+        replace(
+            _summary(),
+            input_policy="audit_only",  # type: ignore[arg-type]
+        )
+
 def test_success_record_requires_output_and_hashes() -> None:
     with pytest.raises(
         BatchConfigurationError,
@@ -377,6 +391,7 @@ def test_record_to_dict_serializes_enum_and_paths() -> None:
     payload = record_to_dict(_success_record())
 
     assert payload["status"] == "success"
+    assert payload["input_policy"] == "audit_only"
     assert payload["source_relative_path"] == "person/sample.jpg"
     assert payload["output_relative_path"] == "person/sample.png"
     assert payload["decode_metadata"] == {
@@ -396,6 +411,24 @@ def test_record_to_dict_serializes_enum_and_paths() -> None:
         "source_width": 1920,
     }
 
+
+
+def test_manifest_serializes_explicit_strict_input_policy() -> None:
+    record_payload = record_to_dict(
+        replace(
+            _success_record(),
+            input_policy=InputPolicy.STRICT_RGB8,
+        )
+    )
+    summary_payload = summary_to_dict(
+        replace(
+            _summary(),
+            input_policy=InputPolicy.STRICT_RGB8,
+        )
+    )
+
+    assert record_payload["input_policy"] == "strict_rgb8"
+    assert summary_payload["input_policy"] == "strict_rgb8"
 
 def test_record_json_line_is_deterministic_and_has_one_newline() -> None:
     first = record_to_json_line(_success_record())
@@ -422,6 +455,7 @@ def test_summary_serializes_datetimes_with_z() -> None:
     assert payload["started_at_utc"] == "2026-06-21T12:00:00Z"
     assert payload["finished_at_utc"] == "2026-06-21T12:01:00Z"
     assert payload["success_rate"] == 80.0
+    assert payload["input_policy"] == "audit_only"
 
 
 def test_summary_json_is_deterministic_compact_json() -> None:

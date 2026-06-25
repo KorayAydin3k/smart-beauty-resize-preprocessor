@@ -93,6 +93,7 @@ def test_batch_help() -> None:
     assert "--output-dir" in output
     assert "--target-width" in output
     assert "--target-height" in output
+    assert "--input-policy" in output
 
 
 def test_successful_batch_command(
@@ -129,6 +130,7 @@ def test_successful_batch_command(
     assert summary["successful"] == 1
     assert summary["failed"] == 0
     assert summary["skipped"] == 0
+    assert summary["input_policy"] == "audit_only"
 
 
 def test_corrupt_image_exits_two_and_writes_manifest(
@@ -592,3 +594,101 @@ def test_manual_mode_requires_both_target_dimensions(
     assert result.exit_code == 1
     assert "--target-width and --target-height are required" in _strip_ansi(result.output)
     assert _run_directories(output_dir) == []
+
+
+def test_strict_rgb8_cli_rejects_rgba_and_writes_policy_manifest(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+
+    rgba = np.zeros((10, 20, 4), dtype=np.uint8)
+    rgba[:, :, :3] = 120
+    rgba[:, :, 3] = 128
+    Image.fromarray(rgba, mode="RGBA").save(input_dir / "rgba.png")
+
+    result = runner.invoke(
+        app,
+        [
+            *_batch_arguments(input_dir, output_dir),
+            "--input-policy",
+            "strict_rgb8",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    run_directories = _run_directories(output_dir)
+    assert len(run_directories) == 1
+
+    records = [
+        json.loads(line)
+        for line in (run_directories[0] / "manifest.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len(records) == 1
+    assert records[0]["status"] == "failed"
+    assert records[0]["error_type"] == "InputPolicyViolationError"
+    assert records[0]["input_policy"] == "strict_rgb8"
+    assert records[0]["decode_metadata"]["source_mode"] == "RGBA"
+    assert not (output_dir / "rgba.png").exists()
+
+    summary = json.loads(
+        (run_directories[0] / "run_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["input_policy"] == "strict_rgb8"
+    assert summary["failed"] == 1
+
+
+def test_invalid_input_policy_is_rejected_by_cli(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            *_batch_arguments(input_dir, output_dir),
+            "--input-policy",
+            "unknown",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert _run_directories(output_dir) == []
+
+
+def test_profile_mode_accepts_explicit_input_policy(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    profile_path = tmp_path / "profile.yaml"
+
+    _write_image(input_dir / "sample.png", value=75)
+    _write_profile(profile_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            str(profile_path),
+            "--input-policy",
+            "strict_rgb8",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    run_directories = _run_directories(output_dir)
+    summary = json.loads(
+        (run_directories[0] / "run_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["input_policy"] == "strict_rgb8"

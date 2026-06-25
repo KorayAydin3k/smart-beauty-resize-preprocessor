@@ -8,6 +8,8 @@ from PIL import Image
 
 from smart_beauty_resize import (
     ImageDecodeError,
+    InputPolicy,
+    InputPolicyViolationError,
     ResizeConfig,
     decode_image,
 )
@@ -47,6 +49,7 @@ def _config(
     overwrite: bool = False,
     fail_fast: bool = False,
     preserve_directory_structure: bool = True,
+    input_policy: InputPolicy = InputPolicy.AUDIT_ONLY,
 ) -> BatchConfig:
     return BatchConfig(
         input_dir=input_dir,
@@ -60,6 +63,7 @@ def _config(
         overwrite=overwrite,
         fail_fast=fail_fast,
         preserve_directory_structure=(preserve_directory_structure),
+        input_policy=input_policy,
     )
 
 
@@ -87,7 +91,7 @@ def test_process_batch_records_success_and_failure(
 
     result = process_batch(_config(input_dir, output_dir))
 
-    assert result.summary.schema_version == "1.1"
+    assert result.summary.schema_version == "1.2"
     assert result.summary.total_discovered == 3
     assert result.summary.successful == 2
     assert result.summary.failed == 1
@@ -111,7 +115,7 @@ def test_process_batch_records_success_and_failure(
         assert record.output_relative_path is not None
         assert record.source_sha256 is not None
         assert record.output_sha256 is not None
-        assert record.schema_version == "1.1"
+        assert record.schema_version == "1.2"
         assert record.decode_metadata is not None
         assert record.decode_metadata.source_format in {"JPEG", "PNG"}
         assert record.decode_metadata.source_mode == "RGB"
@@ -260,3 +264,84 @@ def test_batch_does_not_modify_source_file(
 
     assert source.read_bytes() == before_bytes
     assert sha256_file(source) == before_hash
+
+
+def test_audit_only_preserves_rgba_conversion_behavior(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+
+    rgba = np.zeros((8, 12, 4), dtype=np.uint8)
+    rgba[:, :, :3] = 100
+    rgba[:, :, 3] = 128
+    Image.fromarray(rgba, mode="RGBA").save(input_dir / "rgba.png")
+
+    result = process_batch(_config(input_dir, output_dir))
+
+    assert result.summary.successful == 1
+    assert result.summary.failed == 0
+    assert result.summary.input_policy is InputPolicy.AUDIT_ONLY
+    record = result.records[0]
+    assert record.input_policy is InputPolicy.AUDIT_ONLY
+    assert record.decode_metadata is not None
+    assert record.decode_metadata.source_mode == "RGBA"
+    assert record.decode_metadata.alpha_present is True
+    assert record.decode_metadata.rgb_conversion_applied is True
+    assert (output_dir / "rgba.png").is_file()
+
+
+def test_strict_rgb8_rejects_rgba_and_preserves_audit_metadata(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+
+    rgba = np.zeros((8, 12, 4), dtype=np.uint8)
+    rgba[:, :, :3] = 100
+    rgba[:, :, 3] = 128
+    Image.fromarray(rgba, mode="RGBA").save(input_dir / "rgba.png")
+
+    result = process_batch(
+        _config(
+            input_dir,
+            output_dir,
+            input_policy=InputPolicy.STRICT_RGB8,
+        )
+    )
+
+    assert result.summary.successful == 0
+    assert result.summary.failed == 1
+    assert result.summary.input_policy is InputPolicy.STRICT_RGB8
+    record = result.records[0]
+    assert record.status is ProcessingStatus.FAILED
+    assert record.error_type == "InputPolicyViolationError"
+    assert record.input_policy is InputPolicy.STRICT_RGB8
+    assert record.decode_metadata is not None
+    assert record.decode_metadata.source_mode == "RGBA"
+    assert record.original_width == 12
+    assert record.original_height == 8
+    assert not (output_dir / "rgba.png").exists()
+
+
+def test_strict_rgb8_fail_fast_propagates_policy_violation(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+
+    grayscale = np.full((8, 12), 100, dtype=np.uint8)
+    Image.fromarray(grayscale, mode="L").save(input_dir / "gray.png")
+
+    with pytest.raises(InputPolicyViolationError):
+        process_batch(
+            _config(
+                input_dir,
+                output_dir,
+                input_policy=InputPolicy.STRICT_RGB8,
+                fail_fast=True,
+            )
+        )

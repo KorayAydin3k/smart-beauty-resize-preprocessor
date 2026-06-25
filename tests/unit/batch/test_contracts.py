@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from smart_beauty_resize import InputPolicy
 from smart_beauty_resize.batch import (
     BatchConfig,
     ProcessingStatus,
@@ -51,7 +52,33 @@ def test_valid_batch_config_normalizes_paths(
     assert config.overwrite is False
     assert config.fail_fast is False
     assert config.preserve_directory_structure is True
+    assert config.input_policy is InputPolicy.AUDIT_ONLY
 
+
+
+def test_batch_config_accepts_explicit_input_policy(
+    tmp_path: Path,
+) -> None:
+    config = BatchConfig(
+        input_dir=tmp_path / "raw",
+        output_dir=tmp_path / "processed",
+        resize_config=_resize_config(),
+        input_policy=InputPolicy.STRICT_RGB8,
+    )
+
+    assert config.input_policy is InputPolicy.STRICT_RGB8
+
+
+def test_batch_config_rejects_string_input_policy(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(BatchConfigurationError, match="input_policy"):
+        BatchConfig(
+            input_dir=tmp_path / "raw",
+            output_dir=tmp_path / "processed",
+            resize_config=_resize_config(),
+            input_policy="strict_rgb8",  # type: ignore[arg-type]
+        )
 
 def test_batch_config_does_not_require_existing_directories(
     tmp_path: Path,

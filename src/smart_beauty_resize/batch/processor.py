@@ -25,13 +25,14 @@ from smart_beauty_resize.contracts import (
 )
 from smart_beauty_resize.io.contracts import ImageDecodeMetadata
 from smart_beauty_resize.io.decoder import decode_image_with_metadata
+from smart_beauty_resize.io.policy import enforce_input_policy
 from smart_beauty_resize.provenance.hashing import (
     sha256_file,
     sha256_resize_config,
 )
 from smart_beauty_resize.writing.safe_writer import write_png_atomic
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 
 def _processing_time_ms(started_ns: int) -> float:
@@ -90,6 +91,11 @@ def _process_discovered_image(
         original_height = int(image.shape[0])
         original_width = int(image.shape[1])
 
+        enforce_input_policy(
+            decode_metadata,
+            config.input_policy,
+        )
+
         resize_result = resize_sample(
             image=image,
             config=config.resize_config,
@@ -139,6 +145,7 @@ def _process_discovered_image(
             error_type=exc.__class__.__name__,
             error_message=_error_message(exc),
             decode_metadata=decode_metadata,
+            input_policy=config.input_policy,
         )
 
     except SmartBeautyResizeError as exc:
@@ -168,6 +175,7 @@ def _process_discovered_image(
             error_type=exc.__class__.__name__,
             error_message=_error_message(exc),
             decode_metadata=decode_metadata,
+            input_policy=config.input_policy,
         )
 
     return ImageProcessingRecord(
@@ -193,6 +201,7 @@ def _process_discovered_image(
         error_type=None,
         error_message=None,
         decode_metadata=decode_metadata,
+        input_policy=config.input_policy,
     )
 
 
@@ -238,6 +247,7 @@ def process_batch(config: BatchConfig) -> BatchExecutionResult:
         target_width=config.resize_config.target_width,
         target_height=config.resize_config.target_height,
         config_sha256=config_sha256,
+        input_policy=config.input_policy,
     )
 
     return BatchExecutionResult(
