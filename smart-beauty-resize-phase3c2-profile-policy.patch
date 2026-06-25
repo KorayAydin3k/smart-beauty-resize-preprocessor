@@ -1,0 +1,665 @@
+diff --git a/README.md b/README.md
+index 16c4a03..b58edb7 100644
+--- a/README.md
++++ b/README.md
+@@ -29,9 +29,10 @@ Versioned profile usage:
+       --output-dir data/resized \
+       --profile configs/default.yaml
+ 
+-A profile and manual resize options are mutually exclusive. Batch controls such
+-as `--input-policy`, `--overwrite`, `--fail-fast`, `--flat-output`, and `--verbose`
+-remain available in either mode.
++A profile and manual preprocessing options are mutually exclusive. The profile
++owns both resize settings and the source input policy. Runtime controls such as
++`--overwrite`, `--fail-fast`, `--flat-output`, and `--verbose` remain available
++in either mode.
+ 
+ The batch pipeline:
+ 
+@@ -64,7 +65,7 @@ Batch-generated manifest records persist the same metadata under a nested
+ 
+ ### Input acceptance policies
+ 
+-The default policy preserves the historical conversion behavior:
++In manual mode, the default policy preserves the historical conversion behavior:
+ 
+     --input-policy audit_only
+ 
+@@ -75,8 +76,24 @@ For model pipelines that require native three-channel RGB sources with known
+ 
+ Policy violations become per-image failed records unless `--fail-fast` is used.
+ The selected policy is stored in each manifest item and in `run_summary.json`.
+-This phase keeps the profile schema at `1.0`; policy selection remains an
+-explicit batch control and is not included in the resize-only `config_sha256`.
++
++Profile schema `1.1` stores the policy explicitly:
++
++    schema_version: "1.1"
++    profile_id: "smart-beauty-default"
++    profile_version: "1.1.0"
++    model_family: "shared"
++    input_policy: "audit_only"
++    resize:
++      target_width: 512
++      target_height: 512
++      allow_upscale: true
++      max_upscale_factor: 1.5
++      padding_value: [127, 127, 127]
++
++Legacy schema `1.0` profiles remain supported and resolve to `audit_only`.
++`--input-policy` is a manual-mode option and cannot override a profile. The
++resize-only `config_sha256` semantics remain unchanged.
+ 
+ ### Exit codes
+ 
+diff --git a/configs/default.yaml b/configs/default.yaml
+index 00bd6f1..423466b 100644
+--- a/configs/default.yaml
++++ b/configs/default.yaml
+@@ -1,7 +1,8 @@
+-schema_version: "1.0"
++schema_version: "1.1"
+ profile_id: "smart-beauty-default"
+-profile_version: "1.0.0"
++profile_version: "1.1.0"
+ model_family: "shared"
++input_policy: "audit_only"
+ resize:
+   target_width: 512
+   target_height: 512
+diff --git a/src/smart_beauty_resize/cli.py b/src/smart_beauty_resize/cli.py
+index 68c5674..a504049 100644
+--- a/src/smart_beauty_resize/cli.py
++++ b/src/smart_beauty_resize/cli.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Annotated
+ 
+@@ -41,7 +42,13 @@ console = Console()
+ error_console = Console(stderr=True)
+ 
+ 
+-def _resolve_resize_config(
++@dataclass(frozen=True, slots=True)
++class _ResolvedPreprocessingSettings:
++    resize_config: ResizeConfig
++    input_policy: InputPolicy
++
++
++def _resolve_preprocessing_settings(
+     *,
+     profile: Path | None,
+     target_width: int | None,
+@@ -51,12 +58,13 @@ def _resolve_resize_config(
+     padding_red: int | None,
+     padding_green: int | None,
+     padding_blue: int | None,
+-) -> ResizeConfig:
+-    """Resolve exactly one resize configuration source.
++    input_policy: InputPolicy | None,
++) -> _ResolvedPreprocessingSettings:
++    """Resolve one unambiguous preprocessing configuration source.
+ 
+-    A versioned profile and manually supplied resize options are intentionally
+-    mutually exclusive. This keeps configuration provenance unambiguous while
+-    preserving the original CLI behavior when no profile is supplied.
++    A versioned profile and manually supplied preprocessing options are
++    intentionally mutually exclusive. This keeps configuration provenance
++    unambiguous while preserving the historical manual defaults.
+     """
+     manual_options = {
+         "--target-width": target_width,
+@@ -66,6 +74,7 @@ def _resolve_resize_config(
+         "--padding-red": padding_red,
+         "--padding-green": padding_green,
+         "--padding-blue": padding_blue,
++        "--input-policy": input_policy,
+     }
+ 
+     if profile is not None:
+@@ -75,26 +84,33 @@ def _resolve_resize_config(
+         if provided_manual_options:
+             options = ", ".join(provided_manual_options)
+             raise ProfileConfigurationError(
+-                f"--profile cannot be combined with manual resize options: {options}"
++                f"--profile cannot be combined with manual preprocessing options: {options}"
+             )
+ 
+-        return load_preprocessing_profile(profile).resize_config
++        loaded_profile = load_preprocessing_profile(profile)
++        return _ResolvedPreprocessingSettings(
++            resize_config=loaded_profile.resize_config,
++            input_policy=loaded_profile.input_policy,
++        )
+ 
+     if target_width is None or target_height is None:
+         raise ResizeConfigurationError(
+             "--target-width and --target-height are required when --profile is not used"
+         )
+ 
+-    return ResizeConfig(
+-        target_width=target_width,
+-        target_height=target_height,
+-        allow_upscale=True if allow_upscale is None else allow_upscale,
+-        max_upscale_factor=(1.5 if max_upscale_factor is None else max_upscale_factor),
+-        padding_value=(
+-            127 if padding_red is None else padding_red,
+-            127 if padding_green is None else padding_green,
+-            127 if padding_blue is None else padding_blue,
++    return _ResolvedPreprocessingSettings(
++        resize_config=ResizeConfig(
++            target_width=target_width,
++            target_height=target_height,
++            allow_upscale=True if allow_upscale is None else allow_upscale,
++            max_upscale_factor=(1.5 if max_upscale_factor is None else max_upscale_factor),
++            padding_value=(
++                127 if padding_red is None else padding_red,
++                127 if padding_green is None else padding_green,
++                127 if padding_blue is None else padding_blue,
++            ),
+         ),
++        input_policy=(InputPolicy.AUDIT_ONLY if input_policy is None else input_policy),
+     )
+ 
+ 
+@@ -254,17 +270,18 @@ def batch_command(
+         ),
+     ] = None,
+     input_policy: Annotated[
+-        InputPolicy,
++        InputPolicy | None,
+         typer.Option(
+             "--input-policy",
+             case_sensitive=False,
+             help=(
+-                "Source-image acceptance policy. audit_only preserves historical "
+-                "conversion behavior; strict_rgb8 rejects non-RGB, non-8-bit, "
+-                "alpha, or non-three-channel sources."
++                "Source-image acceptance policy in manual mode. audit_only preserves "
++                "historical conversion behavior; strict_rgb8 rejects non-RGB, "
++                "non-8-bit, alpha, or non-three-channel sources. Profile mode reads "
++                "the policy from the profile."
+             ),
+         ),
+-    ] = InputPolicy.AUDIT_ONLY,
++    ] = None,
+     overwrite: Annotated[
+         bool,
+         typer.Option(
+@@ -297,7 +314,7 @@ def batch_command(
+ ) -> None:
+     """Resize a directory of images and persist an auditable run manifest."""
+     try:
+-        resize_config = _resolve_resize_config(
++        settings = _resolve_preprocessing_settings(
+             profile=profile,
+             target_width=target_width,
+             target_height=target_height,
+@@ -306,17 +323,18 @@ def batch_command(
+             padding_red=padding_red,
+             padding_green=padding_green,
+             padding_blue=padding_blue,
++            input_policy=input_policy,
+         )
+ 
+         batch_config = BatchConfig(
+             input_dir=input_dir,
+             output_dir=output_dir,
+-            resize_config=resize_config,
++            resize_config=settings.resize_config,
+             output_format="png",
+             overwrite=overwrite,
+             fail_fast=fail_fast,
+             preserve_directory_structure=(preserve_directory_structure),
+-            input_policy=input_policy,
++            input_policy=settings.input_policy,
+         )
+ 
+         result = process_batch(batch_config)
+diff --git a/src/smart_beauty_resize/config.py b/src/smart_beauty_resize/config.py
+index 9847b4c..c0ff029 100644
+--- a/src/smart_beauty_resize/config.py
++++ b/src/smart_beauty_resize/config.py
+@@ -12,13 +12,15 @@ from smart_beauty_resize.contracts import (
+     ResizeConfig,
+     SmartBeautyResizeError,
+ )
++from smart_beauty_resize.io.contracts import InputPolicy
+ 
+-SUPPORTED_PROFILE_SCHEMA_VERSION: Final = "1.0"
++CURRENT_PROFILE_SCHEMA_VERSION: Final = "1.1"
++SUPPORTED_PROFILE_SCHEMA_VERSIONS: Final = frozenset({"1.0", "1.1"})
+ _PROFILE_ID_PATTERN: Final = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
+ _SEMANTIC_VERSION_PATTERN: Final = re.compile(
+     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
+ )
+-_TOP_LEVEL_FIELDS: Final = frozenset(
++_BASE_TOP_LEVEL_FIELDS: Final = frozenset(
+     {
+         "schema_version",
+         "profile_id",
+@@ -27,6 +29,10 @@ _TOP_LEVEL_FIELDS: Final = frozenset(
+         "resize",
+     }
+ )
++_PROFILE_FIELDS_BY_SCHEMA: Final = {
++    "1.0": _BASE_TOP_LEVEL_FIELDS,
++    "1.1": _BASE_TOP_LEVEL_FIELDS | {"input_policy"},
++}
+ _RESIZE_FIELDS: Final = frozenset(
+     {
+         "target_width",
+@@ -40,11 +46,11 @@ _RESIZE_FIELDS: Final = frozenset(
+ 
+ @dataclass(frozen=True, slots=True)
+ class PreprocessingProfile:
+-    """Validated, versioned wrapper around the current resize contract.
++    """Validated, versioned preprocessing contract.
+ 
+-    This first profile schema intentionally exposes only behavior already
+-    implemented by the package. Future image-contract or output-policy fields
+-    must be introduced through a reviewed schema-version change.
++    Schema ``1.0`` profiles contain resize settings only and resolve to the
++    historical ``audit_only`` input policy. Schema ``1.1`` profiles make the
++    source-image acceptance policy explicit.
+     """
+ 
+     schema_version: str
+@@ -52,19 +58,18 @@ class PreprocessingProfile:
+     profile_version: str
+     model_family: str
+     resize_config: ResizeConfig
++    input_policy: InputPolicy = InputPolicy.AUDIT_ONLY
+ 
+     def __post_init__(self) -> None:
+-        _validate_exact_string(
+-            "schema_version",
+-            self.schema_version,
+-            expected=SUPPORTED_PROFILE_SCHEMA_VERSION,
+-        )
++        _validate_supported_schema_version(self.schema_version)
+         _validate_identifier("profile_id", self.profile_id)
+         _validate_semantic_version(self.profile_version)
+         _validate_identifier("model_family", self.model_family)
+ 
+         if not isinstance(self.resize_config, ResizeConfig):
+             raise ProfileConfigurationError("resize_config must be a ResizeConfig instance")
++        if not isinstance(self.input_policy, InputPolicy):
++            raise ProfileConfigurationError("input_policy must be an InputPolicy instance")
+ 
+ 
+ def _validate_mapping(
+@@ -96,17 +101,15 @@ def _validate_field_set(
+         raise ProfileConfigurationError(f"{name} contains unknown fields: {', '.join(unknown)}")
+ 
+ 
+-def _validate_exact_string(
+-    name: str,
+-    value: object,
+-    *,
+-    expected: str,
+-) -> str:
++def _validate_supported_schema_version(value: object) -> str:
+     if type(value) is not str:
+-        raise ProfileConfigurationError(f"{name} must be a string")
++        raise ProfileConfigurationError("schema_version must be a string")
+ 
+-    if value != expected:
+-        raise ProfileConfigurationError(f"{name} must be '{expected}'")
++    if value not in SUPPORTED_PROFILE_SCHEMA_VERSIONS:
++        supported = ", ".join(sorted(SUPPORTED_PROFILE_SCHEMA_VERSIONS))
++        raise ProfileConfigurationError(
++            f"schema_version must be one of the supported versions: {supported}"
++        )
+ 
+     return value
+ 
+@@ -148,16 +151,27 @@ def _parse_padding_value(value: object) -> tuple[int, int, int]:
+     return (value[0], value[1], value[2])
+ 
+ 
++def _parse_input_policy(value: object) -> InputPolicy:
++    if type(value) is not str:
++        raise ProfileConfigurationError("input_policy must be a string")
++
++    try:
++        return InputPolicy(value)
++    except ValueError as exc:
++        allowed = ", ".join(policy.value for policy in InputPolicy)
++        raise ProfileConfigurationError(f"input_policy must be one of: {allowed}") from exc
++
++
+ def profile_from_mapping(payload: object) -> PreprocessingProfile:
+     """Build a strict preprocessing profile from an in-memory mapping."""
+     root = _validate_mapping("profile", payload)
+-    _validate_field_set("profile", root, _TOP_LEVEL_FIELDS)
+ 
+-    schema_version = _validate_exact_string(
+-        "schema_version",
+-        root["schema_version"],
+-        expected=SUPPORTED_PROFILE_SCHEMA_VERSION,
+-    )
++    if "schema_version" not in root:
++        raise ProfileConfigurationError("profile is missing required fields: schema_version")
++
++    schema_version = _validate_supported_schema_version(root["schema_version"])
++    _validate_field_set("profile", root, _PROFILE_FIELDS_BY_SCHEMA[schema_version])
++
+     profile_id = _validate_identifier("profile_id", root["profile_id"])
+     profile_version = _validate_semantic_version(root["profile_version"])
+     model_family = _validate_identifier("model_family", root["model_family"])
+@@ -176,12 +190,19 @@ def profile_from_mapping(payload: object) -> PreprocessingProfile:
+     except SmartBeautyResizeError as exc:
+         raise ProfileConfigurationError(f"invalid resize configuration: {exc}") from exc
+ 
++    input_policy = (
++        InputPolicy.AUDIT_ONLY
++        if schema_version == "1.0"
++        else _parse_input_policy(root["input_policy"])
++    )
++
+     return PreprocessingProfile(
+         schema_version=schema_version,
+         profile_id=profile_id,
+         profile_version=profile_version,
+         model_family=model_family,
+         resize_config=resize_config,
++        input_policy=input_policy,
+     )
+ 
+ 
+diff --git a/tests/integration/cli/test_cli.py b/tests/integration/cli/test_cli.py
+index fb05ab7..e9e2289 100644
+--- a/tests/integration/cli/test_cli.py
++++ b/tests/integration/cli/test_cli.py
+@@ -398,23 +398,32 @@ def _write_profile(
+     *,
+     target_width: int = 36,
+     target_height: int = 28,
++    schema_version: str = "1.1",
++    input_policy: str = "audit_only",
+ ) -> None:
++    lines = [
++        f'schema_version: "{schema_version}"',
++        'profile_id: "smart-beauty-test"',
++        f'profile_version: "{schema_version}.0"',
++        'model_family: "test"',
++    ]
++    if schema_version == "1.1":
++        lines.append(f'input_policy: "{input_policy}"')
++
++    lines.extend(
++        [
++            "resize:",
++            f"  target_width: {target_width}",
++            f"  target_height: {target_height}",
++            "  allow_upscale: true",
++            "  max_upscale_factor: 4.0",
++            "  padding_value: [127, 127, 127]",
++            "",
++        ]
++    )
++
+     path.write_text(
+-        "\n".join(
+-            [
+-                'schema_version: "1.0"',
+-                'profile_id: "smart-beauty-test"',
+-                'profile_version: "1.0.0"',
+-                'model_family: "test"',
+-                "resize:",
+-                f"  target_width: {target_width}",
+-                f"  target_height: {target_height}",
+-                "  allow_upscale: true",
+-                "  max_upscale_factor: 4.0",
+-                "  padding_value: [127, 127, 127]",
+-                "",
+-            ]
+-        ),
++        "\n".join(lines),
+         encoding="utf-8",
+     )
+ 
+@@ -461,6 +470,12 @@ def test_profile_driven_batch_command(
+     output_image = np.asarray(Image.open(output_dir / "sample.png").convert("RGB"))
+     assert output_image.shape == (28, 36, 3)
+ 
++    run_directories = _run_directories(output_dir)
++    summary = json.loads(
++        (run_directories[0] / "run_summary.json").read_text(encoding="utf-8")
++    )
++    assert summary["input_policy"] == "audit_only"
++
+ 
+ def test_profile_cannot_be_combined_with_manual_resize_options(
+     tmp_path: Path,
+@@ -661,14 +676,49 @@ def test_invalid_input_policy_is_rejected_by_cli(
+     assert _run_directories(output_dir) == []
+ 
+ 
+-def test_profile_mode_accepts_explicit_input_policy(
++def test_profile_driven_strict_policy_rejects_rgba(
+     tmp_path: Path,
+ ) -> None:
+     input_dir = tmp_path / "input"
+     output_dir = tmp_path / "output"
+     profile_path = tmp_path / "profile.yaml"
+ 
+-    _write_image(input_dir / "sample.png", value=75)
++    input_dir.mkdir()
++    rgba = np.zeros((10, 20, 4), dtype=np.uint8)
++    rgba[:, :, :3] = 75
++    rgba[:, :, 3] = 128
++    Image.fromarray(rgba, mode="RGBA").save(input_dir / "rgba.png")
++    _write_profile(profile_path, input_policy="strict_rgb8")
++
++    result = runner.invoke(
++        app,
++        [
++            "batch",
++            "--input-dir",
++            str(input_dir),
++            "--output-dir",
++            str(output_dir),
++            "--profile",
++            str(profile_path),
++        ],
++    )
++
++    assert result.exit_code == 2, result.output
++    run_directories = _run_directories(output_dir)
++    summary = json.loads(
++        (run_directories[0] / "run_summary.json").read_text(encoding="utf-8")
++    )
++    assert summary["input_policy"] == "strict_rgb8"
++    assert summary["failed"] == 1
++
++
++def test_profile_cannot_be_combined_with_explicit_input_policy(
++    tmp_path: Path,
++) -> None:
++    input_dir = tmp_path / "input"
++    output_dir = tmp_path / "output"
++    profile_path = tmp_path / "profile.yaml"
++    input_dir.mkdir()
+     _write_profile(profile_path)
+ 
+     result = runner.invoke(
+@@ -686,9 +736,42 @@ def test_profile_mode_accepts_explicit_input_policy(
+         ],
+     )
+ 
++    assert result.exit_code == 1
++    assert "cannot be combined" in _strip_ansi(result.output)
++    assert "--input-policy" in _strip_ansi(result.output)
++    assert _run_directories(output_dir) == []
++
++
++def test_legacy_profile_defaults_to_audit_only(
++    tmp_path: Path,
++) -> None:
++    input_dir = tmp_path / "input"
++    output_dir = tmp_path / "output"
++    profile_path = tmp_path / "legacy.yaml"
++
++    input_dir.mkdir()
++    rgba = np.zeros((10, 20, 4), dtype=np.uint8)
++    rgba[:, :, :3] = 75
++    rgba[:, :, 3] = 128
++    Image.fromarray(rgba, mode="RGBA").save(input_dir / "rgba.png")
++    _write_profile(profile_path, schema_version="1.0")
++
++    result = runner.invoke(
++        app,
++        [
++            "batch",
++            "--input-dir",
++            str(input_dir),
++            "--output-dir",
++            str(output_dir),
++            "--profile",
++            str(profile_path),
++        ],
++    )
++
+     assert result.exit_code == 0, result.output
+     run_directories = _run_directories(output_dir)
+     summary = json.loads(
+         (run_directories[0] / "run_summary.json").read_text(encoding="utf-8")
+     )
+-    assert summary["input_policy"] == "strict_rgb8"
++    assert summary["input_policy"] == "audit_only"
+diff --git a/tests/unit/test_config.py b/tests/unit/test_config.py
+index cc5bd14..44072e5 100644
+--- a/tests/unit/test_config.py
++++ b/tests/unit/test_config.py
+@@ -10,14 +10,16 @@ from smart_beauty_resize.config import (
+     profile_from_mapping,
+ )
+ from smart_beauty_resize.contracts import ProfileConfigurationError, ResizeConfig
++from smart_beauty_resize.io.contracts import InputPolicy
+ 
+ 
+ def _valid_payload() -> dict[str, object]:
+     return {
+-        "schema_version": "1.0",
++        "schema_version": "1.1",
+         "profile_id": "smart-beauty-acne",
+-        "profile_version": "1.0.0",
++        "profile_version": "1.1.0",
+         "model_family": "acne",
++        "input_policy": "strict_rgb8",
+         "resize": {
+             "target_width": 512,
+             "target_height": 512,
+@@ -28,13 +30,21 @@ def _valid_payload() -> dict[str, object]:
+     }
+ 
+ 
+-def test_profile_from_mapping_builds_current_resize_contract() -> None:
++def _legacy_payload() -> dict[str, object]:
++    payload = _valid_payload()
++    payload["schema_version"] = "1.0"
++    payload["profile_version"] = "1.0.0"
++    del payload["input_policy"]
++    return payload
++
++
++def test_profile_from_mapping_builds_current_preprocessing_contract() -> None:
+     profile = profile_from_mapping(_valid_payload())
+ 
+     assert profile == PreprocessingProfile(
+-        schema_version="1.0",
++        schema_version="1.1",
+         profile_id="smart-beauty-acne",
+-        profile_version="1.0.0",
++        profile_version="1.1.0",
+         model_family="acne",
+         resize_config=ResizeConfig(
+             target_width=512,
+@@ -43,16 +53,25 @@ def test_profile_from_mapping_builds_current_resize_contract() -> None:
+             max_upscale_factor=1.5,
+             padding_value=(127, 127, 127),
+         ),
++        input_policy=InputPolicy.STRICT_RGB8,
+     )
+ 
+ 
++def test_legacy_schema_defaults_to_audit_only() -> None:
++    profile = profile_from_mapping(_legacy_payload())
++
++    assert profile.schema_version == "1.0"
++    assert profile.input_policy is InputPolicy.AUDIT_ONLY
++
++
+ def test_load_preprocessing_profile_reads_utf8_yaml(tmp_path: Path) -> None:
+     profile_path = tmp_path / "acne.yaml"
+     profile_path.write_text(
+-        """schema_version: \"1.0\"
++        """schema_version: \"1.1\"
+ profile_id: \"smart-beauty-acne\"
+-profile_version: \"1.0.0\"
++profile_version: \"1.1.0\"
+ model_family: \"acne\"
++input_policy: \"audit_only\"
+ resize:
+   target_width: 256
+   target_height: 320
+@@ -69,6 +88,7 @@ resize:
+     assert profile.resize_config.target_height == 320
+     assert profile.resize_config.allow_upscale is False
+     assert profile.resize_config.padding_value == (10, 20, 30)
++    assert profile.input_policy is InputPolicy.AUDIT_ONLY
+ 
+ 
+ @pytest.mark.parametrize(
+@@ -91,6 +111,31 @@ def test_invalid_profile_identity_fields_are_rejected(
+         profile_from_mapping(payload)
+ 
+ 
++@pytest.mark.parametrize("value", ["unknown", "STRICT_RGB8", 1, None])
++def test_invalid_input_policy_is_rejected(value: object) -> None:
++    payload = _valid_payload()
++    payload["input_policy"] = value
++
++    with pytest.raises(ProfileConfigurationError, match="input_policy"):
++        profile_from_mapping(payload)
++
++
++def test_current_schema_requires_input_policy() -> None:
++    payload = _valid_payload()
++    del payload["input_policy"]
++
++    with pytest.raises(ProfileConfigurationError, match="missing required fields: input_policy"):
++        profile_from_mapping(payload)
++
++
++def test_legacy_schema_rejects_future_input_policy_field() -> None:
++    payload = _legacy_payload()
++    payload["input_policy"] = "audit_only"
++
++    with pytest.raises(ProfileConfigurationError, match="unknown fields: input_policy"):
++        profile_from_mapping(payload)
++
++
+ def test_unknown_top_level_field_is_rejected() -> None:
+     payload = _valid_payload()
+     payload["future_option"] = True
+@@ -107,6 +152,14 @@ def test_missing_top_level_field_is_rejected() -> None:
+         profile_from_mapping(payload)
+ 
+ 
++def test_missing_schema_version_is_rejected_before_schema_dispatch() -> None:
++    payload = _valid_payload()
++    del payload["schema_version"]
++
++    with pytest.raises(ProfileConfigurationError, match="schema_version"):
++        profile_from_mapping(payload)
++
++
+ def test_unknown_resize_field_is_rejected() -> None:
+     payload = _valid_payload()
+     resize_payload = payload["resize"]
