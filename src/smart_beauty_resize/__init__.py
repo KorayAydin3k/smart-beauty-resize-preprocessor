@@ -28,7 +28,12 @@ from smart_beauty_resize.geometry import (
     calculate_letterbox_plan,
     round_half_up_positive,
 )
-from smart_beauty_resize.io.decoder import decode_image
+from smart_beauty_resize.io import (
+    DecodedImage,
+    ImageDecodeMetadata,
+    decode_image,
+    decode_image_with_metadata,
+)
 
 __all__ = [
     "__version__",
@@ -47,7 +52,10 @@ __all__ = [
     "round_half_up_positive",
     "calculate_letterbox_plan",
     "apply_matrix_to_point",
+    "ImageDecodeMetadata",
+    "DecodedImage",
     "decode_image",
+    "decode_image_with_metadata",
     "resize_sample",
     "profile_from_mapping",
     "load_preprocessing_profile",
