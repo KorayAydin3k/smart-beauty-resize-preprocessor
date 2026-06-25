@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from smart_beauty_resize import ImageDecodeMetadata
 from smart_beauty_resize.batch import (
     BatchRunSummary,
     ImageProcessingRecord,
@@ -27,6 +28,25 @@ from smart_beauty_resize.provenance import (
 CONFIG_HASH = "a" * 64
 SOURCE_HASH = "b" * 64
 OUTPUT_HASH = "c" * 64
+
+
+def _decode_metadata() -> ImageDecodeMetadata:
+    return ImageDecodeMetadata(
+        source_format="JPEG",
+        source_mode="RGB",
+        source_width=1920,
+        source_height=1080,
+        decoded_width=1920,
+        decoded_height=1080,
+        source_bit_depth=8,
+        source_channel_count=3,
+        alpha_present=False,
+        icc_profile_present=False,
+        exif_orientation=None,
+        exif_orientation_applied=False,
+        rgb_conversion_applied=False,
+        bit_depth_conversion_applied=False,
+    )
 
 
 def _success_record() -> ImageProcessingRecord:
@@ -52,6 +72,7 @@ def _success_record() -> ImageProcessingRecord:
         processing_time_ms=12.5,
         error_type=None,
         error_message=None,
+        decode_metadata=_decode_metadata(),
     )
 
 
@@ -206,6 +227,17 @@ def test_record_rejects_invalid_processing_time(
         )
 
 
+def test_record_rejects_invalid_decode_metadata() -> None:
+    with pytest.raises(
+        BatchConfigurationError,
+        match="decode_metadata",
+    ):
+        replace(
+            _success_record(),
+            decode_metadata=object(),  # type: ignore[arg-type]
+        )
+
+
 def test_success_record_requires_output_and_hashes() -> None:
     with pytest.raises(
         BatchConfigurationError,
@@ -347,6 +379,22 @@ def test_record_to_dict_serializes_enum_and_paths() -> None:
     assert payload["status"] == "success"
     assert payload["source_relative_path"] == "person/sample.jpg"
     assert payload["output_relative_path"] == "person/sample.png"
+    assert payload["decode_metadata"] == {
+        "alpha_present": False,
+        "bit_depth_conversion_applied": False,
+        "decoded_height": 1080,
+        "decoded_width": 1920,
+        "exif_orientation": None,
+        "exif_orientation_applied": False,
+        "icc_profile_present": False,
+        "rgb_conversion_applied": False,
+        "source_bit_depth": 8,
+        "source_channel_count": 3,
+        "source_format": "JPEG",
+        "source_height": 1080,
+        "source_mode": "RGB",
+        "source_width": 1920,
+    }
 
 
 def test_record_json_line_is_deterministic_and_has_one_newline() -> None:
@@ -360,6 +408,12 @@ def test_record_json_line_is_deterministic_and_has_one_newline() -> None:
     parsed = json.loads(first)
     assert parsed["status"] == "success"
     assert parsed["target_width"] == 512
+
+
+def test_failed_record_serializes_null_decode_metadata() -> None:
+    payload = record_to_dict(_failed_record())
+
+    assert payload["decode_metadata"] is None
 
 
 def test_summary_serializes_datetimes_with_z() -> None:

@@ -87,6 +87,7 @@ def test_process_batch_records_success_and_failure(
 
     result = process_batch(_config(input_dir, output_dir))
 
+    assert result.summary.schema_version == "1.1"
     assert result.summary.total_discovered == 3
     assert result.summary.successful == 2
     assert result.summary.failed == 1
@@ -103,12 +104,18 @@ def test_process_batch_records_success_and_failure(
     assert failed_record.error_type == "ImageDecodeError"
     assert failed_record.output_sha256 is None
     assert failed_record.source_sha256 == sha256_file(corrupt)
+    assert failed_record.decode_metadata is None
 
     for record in result.records[1:]:
         assert record.status is ProcessingStatus.SUCCESS
         assert record.output_relative_path is not None
         assert record.source_sha256 is not None
         assert record.output_sha256 is not None
+        assert record.schema_version == "1.1"
+        assert record.decode_metadata is not None
+        assert record.decode_metadata.source_format in {"JPEG", "PNG"}
+        assert record.decode_metadata.source_mode == "RGB"
+        assert record.decode_metadata.source_bit_depth == 8
 
         output_path = output_dir / record.output_relative_path
 
@@ -152,6 +159,7 @@ def test_second_run_skips_existing_outputs(
     assert second.summary.skipped == 2
 
     assert all(record.status is ProcessingStatus.SKIPPED for record in second.records)
+    assert all(record.decode_metadata is not None for record in second.records)
 
 
 def test_overwrite_reprocesses_existing_output(
