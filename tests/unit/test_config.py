@@ -10,14 +10,16 @@ from smart_beauty_resize.config import (
     profile_from_mapping,
 )
 from smart_beauty_resize.contracts import ProfileConfigurationError, ResizeConfig
+from smart_beauty_resize.io.contracts import InputPolicy
 
 
 def _valid_payload() -> dict[str, object]:
     return {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "profile_id": "smart-beauty-acne",
-        "profile_version": "1.0.0",
+        "profile_version": "1.1.0",
         "model_family": "acne",
+        "input_policy": "strict_rgb8",
         "resize": {
             "target_width": 512,
             "target_height": 512,
@@ -28,13 +30,21 @@ def _valid_payload() -> dict[str, object]:
     }
 
 
-def test_profile_from_mapping_builds_current_resize_contract() -> None:
+def _legacy_payload() -> dict[str, object]:
+    payload = _valid_payload()
+    payload["schema_version"] = "1.0"
+    payload["profile_version"] = "1.0.0"
+    del payload["input_policy"]
+    return payload
+
+
+def test_profile_from_mapping_builds_current_preprocessing_contract() -> None:
     profile = profile_from_mapping(_valid_payload())
 
     assert profile == PreprocessingProfile(
-        schema_version="1.0",
+        schema_version="1.1",
         profile_id="smart-beauty-acne",
-        profile_version="1.0.0",
+        profile_version="1.1.0",
         model_family="acne",
         resize_config=ResizeConfig(
             target_width=512,
@@ -43,16 +53,25 @@ def test_profile_from_mapping_builds_current_resize_contract() -> None:
             max_upscale_factor=1.5,
             padding_value=(127, 127, 127),
         ),
+        input_policy=InputPolicy.STRICT_RGB8,
     )
+
+
+def test_legacy_schema_defaults_to_audit_only() -> None:
+    profile = profile_from_mapping(_legacy_payload())
+
+    assert profile.schema_version == "1.0"
+    assert profile.input_policy is InputPolicy.AUDIT_ONLY
 
 
 def test_load_preprocessing_profile_reads_utf8_yaml(tmp_path: Path) -> None:
     profile_path = tmp_path / "acne.yaml"
     profile_path.write_text(
-        """schema_version: \"1.0\"
+        """schema_version: \"1.1\"
 profile_id: \"smart-beauty-acne\"
-profile_version: \"1.0.0\"
+profile_version: \"1.1.0\"
 model_family: \"acne\"
+input_policy: \"audit_only\"
 resize:
   target_width: 256
   target_height: 320
@@ -69,6 +88,7 @@ resize:
     assert profile.resize_config.target_height == 320
     assert profile.resize_config.allow_upscale is False
     assert profile.resize_config.padding_value == (10, 20, 30)
+    assert profile.input_policy is InputPolicy.AUDIT_ONLY
 
 
 @pytest.mark.parametrize(
@@ -91,6 +111,31 @@ def test_invalid_profile_identity_fields_are_rejected(
         profile_from_mapping(payload)
 
 
+@pytest.mark.parametrize("value", ["unknown", "STRICT_RGB8", 1, None])
+def test_invalid_input_policy_is_rejected(value: object) -> None:
+    payload = _valid_payload()
+    payload["input_policy"] = value
+
+    with pytest.raises(ProfileConfigurationError, match="input_policy"):
+        profile_from_mapping(payload)
+
+
+def test_current_schema_requires_input_policy() -> None:
+    payload = _valid_payload()
+    del payload["input_policy"]
+
+    with pytest.raises(ProfileConfigurationError, match="missing required fields: input_policy"):
+        profile_from_mapping(payload)
+
+
+def test_legacy_schema_rejects_future_input_policy_field() -> None:
+    payload = _legacy_payload()
+    payload["input_policy"] = "audit_only"
+
+    with pytest.raises(ProfileConfigurationError, match="unknown fields: input_policy"):
+        profile_from_mapping(payload)
+
+
 def test_unknown_top_level_field_is_rejected() -> None:
     payload = _valid_payload()
     payload["future_option"] = True
@@ -104,6 +149,14 @@ def test_missing_top_level_field_is_rejected() -> None:
     del payload["model_family"]
 
     with pytest.raises(ProfileConfigurationError, match="missing required fields"):
+        profile_from_mapping(payload)
+
+
+def test_missing_schema_version_is_rejected_before_schema_dispatch() -> None:
+    payload = _valid_payload()
+    del payload["schema_version"]
+
+    with pytest.raises(ProfileConfigurationError, match="schema_version"):
         profile_from_mapping(payload)
 
 

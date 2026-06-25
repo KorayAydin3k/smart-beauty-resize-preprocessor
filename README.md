@@ -29,9 +29,10 @@ Versioned profile usage:
       --output-dir data/resized \
       --profile configs/default.yaml
 
-A profile and manual resize options are mutually exclusive. Batch controls such
-as `--input-policy`, `--overwrite`, `--fail-fast`, `--flat-output`, and `--verbose`
-remain available in either mode.
+A profile and manual preprocessing options are mutually exclusive. The profile
+owns both resize settings and the source input policy. Runtime controls such as
+`--overwrite`, `--fail-fast`, `--flat-output`, and `--verbose` remain available
+in either mode.
 
 The batch pipeline:
 
@@ -64,7 +65,7 @@ Batch-generated manifest records persist the same metadata under a nested
 
 ### Input acceptance policies
 
-The default policy preserves the historical conversion behavior:
+In manual mode, the default policy preserves the historical conversion behavior:
 
     --input-policy audit_only
 
@@ -75,8 +76,24 @@ For model pipelines that require native three-channel RGB sources with known
 
 Policy violations become per-image failed records unless `--fail-fast` is used.
 The selected policy is stored in each manifest item and in `run_summary.json`.
-This phase keeps the profile schema at `1.0`; policy selection remains an
-explicit batch control and is not included in the resize-only `config_sha256`.
+
+Profile schema `1.1` stores the policy explicitly:
+
+    schema_version: "1.1"
+    profile_id: "smart-beauty-default"
+    profile_version: "1.1.0"
+    model_family: "shared"
+    input_policy: "audit_only"
+    resize:
+      target_width: 512
+      target_height: 512
+      allow_upscale: true
+      max_upscale_factor: 1.5
+      padding_value: [127, 127, 127]
+
+Legacy schema `1.0` profiles remain supported and resolve to `audit_only`.
+`--input-policy` is a manual-mode option and cannot override a profile. The
+resize-only `config_sha256` semantics remain unchanged.
 
 ### Exit codes
 
