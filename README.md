@@ -14,13 +14,24 @@ Display help:
     uv run smart-beauty-resize batch --help
     uv run python -m smart_beauty_resize --help
 
-Basic usage:
+Basic usage with manual resize options:
 
     uv run smart-beauty-resize batch \
       --input-dir data/raw \
       --output-dir data/resized \
       --target-width 512 \
       --target-height 512
+
+Versioned profile usage:
+
+    uv run smart-beauty-resize batch \
+      --input-dir data/raw \
+      --output-dir data/resized \
+      --profile configs/default.yaml
+
+A profile and manual resize options are mutually exclusive. Batch controls such
+as `--overwrite`, `--fail-fast`, `--flat-output`, and `--verbose` remain available
+in either mode.
 
 The batch pipeline:
 

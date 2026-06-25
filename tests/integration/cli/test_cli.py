@@ -389,3 +389,206 @@ def test_empty_input_writes_empty_artifacts(
 
     assert summary["total_discovered"] == 0
     assert summary["successful"] == 0
+
+
+def _write_profile(
+    path: Path,
+    *,
+    target_width: int = 36,
+    target_height: int = 28,
+) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                'schema_version: "1.0"',
+                'profile_id: "smart-beauty-test"',
+                'profile_version: "1.0.0"',
+                'model_family: "test"',
+                "resize:",
+                f"  target_width: {target_width}",
+                f"  target_height: {target_height}",
+                "  allow_upscale: true",
+                "  max_upscale_factor: 4.0",
+                "  padding_value: [127, 127, 127]",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_batch_help_includes_profile_option() -> None:
+    result = runner.invoke(
+        app,
+        ["batch", "--help"],
+        color=False,
+        terminal_width=160,
+    )
+
+    output = _strip_ansi(result.output)
+
+    assert result.exit_code == 0
+    assert "--profile" in output
+
+
+def test_profile_driven_batch_command(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    profile_path = tmp_path / "profile.yaml"
+
+    _write_image(input_dir / "sample.png", value=75)
+    _write_profile(profile_path, target_width=36, target_height=28)
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            str(profile_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+    output_image = np.asarray(Image.open(output_dir / "sample.png").convert("RGB"))
+    assert output_image.shape == (28, 36, 3)
+
+
+def test_profile_cannot_be_combined_with_manual_resize_options(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    profile_path = tmp_path / "profile.yaml"
+    input_dir.mkdir()
+    _write_profile(profile_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            str(profile_path),
+            "--target-width",
+            "32",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "cannot be combined" in _strip_ansi(result.output)
+    assert _run_directories(output_dir) == []
+
+
+def test_profile_cannot_be_combined_with_manual_boolean_option(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    profile_path = tmp_path / "profile.yaml"
+    input_dir.mkdir()
+    _write_profile(profile_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            str(profile_path),
+            "--no-allow-upscale",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "cannot be combined" in _strip_ansi(result.output)
+    assert _run_directories(output_dir) == []
+
+
+def test_missing_profile_file_exits_one(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            str(tmp_path / "missing.yaml"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "ProfileConfigurationError" in _strip_ansi(result.output)
+    assert _run_directories(output_dir) == []
+
+
+def test_invalid_profile_exits_one(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    profile_path = tmp_path / "invalid.yaml"
+    input_dir.mkdir()
+    profile_path.write_text("not: [valid", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            str(profile_path),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "ProfileConfigurationError" in _strip_ansi(result.output)
+    assert _run_directories(output_dir) == []
+
+
+def test_manual_mode_requires_both_target_dimensions(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--target-width",
+            "32",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--target-width and --target-height are required" in _strip_ansi(result.output)
+    assert _run_directories(output_dir) == []
