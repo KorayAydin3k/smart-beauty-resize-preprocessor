@@ -12,13 +12,15 @@ from smart_beauty_resize.contracts import (
     ResizeConfig,
     SmartBeautyResizeError,
 )
+from smart_beauty_resize.io.contracts import InputPolicy
 
-SUPPORTED_PROFILE_SCHEMA_VERSION: Final = "1.0"
+CURRENT_PROFILE_SCHEMA_VERSION: Final = "1.1"
+SUPPORTED_PROFILE_SCHEMA_VERSIONS: Final = frozenset({"1.0", "1.1"})
 _PROFILE_ID_PATTERN: Final = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _SEMANTIC_VERSION_PATTERN: Final = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
 )
-_TOP_LEVEL_FIELDS: Final = frozenset(
+_BASE_TOP_LEVEL_FIELDS: Final = frozenset(
     {
         "schema_version",
         "profile_id",
@@ -27,6 +29,10 @@ _TOP_LEVEL_FIELDS: Final = frozenset(
         "resize",
     }
 )
+_PROFILE_FIELDS_BY_SCHEMA: Final = {
+    "1.0": _BASE_TOP_LEVEL_FIELDS,
+    "1.1": _BASE_TOP_LEVEL_FIELDS | {"input_policy"},
+}
 _RESIZE_FIELDS: Final = frozenset(
     {
         "target_width",
@@ -40,11 +46,11 @@ _RESIZE_FIELDS: Final = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class PreprocessingProfile:
-    """Validated, versioned wrapper around the current resize contract.
+    """Validated, versioned preprocessing contract.
 
-    This first profile schema intentionally exposes only behavior already
-    implemented by the package. Future image-contract or output-policy fields
-    must be introduced through a reviewed schema-version change.
+    Schema ``1.0`` profiles contain resize settings only and resolve to the
+    historical ``audit_only`` input policy. Schema ``1.1`` profiles make the
+    source-image acceptance policy explicit.
     """
 
     schema_version: str
@@ -52,19 +58,18 @@ class PreprocessingProfile:
     profile_version: str
     model_family: str
     resize_config: ResizeConfig
+    input_policy: InputPolicy = InputPolicy.AUDIT_ONLY
 
     def __post_init__(self) -> None:
-        _validate_exact_string(
-            "schema_version",
-            self.schema_version,
-            expected=SUPPORTED_PROFILE_SCHEMA_VERSION,
-        )
+        _validate_supported_schema_version(self.schema_version)
         _validate_identifier("profile_id", self.profile_id)
         _validate_semantic_version(self.profile_version)
         _validate_identifier("model_family", self.model_family)
 
         if not isinstance(self.resize_config, ResizeConfig):
             raise ProfileConfigurationError("resize_config must be a ResizeConfig instance")
+        if not isinstance(self.input_policy, InputPolicy):
+            raise ProfileConfigurationError("input_policy must be an InputPolicy instance")
 
 
 def _validate_mapping(
@@ -96,17 +101,15 @@ def _validate_field_set(
         raise ProfileConfigurationError(f"{name} contains unknown fields: {', '.join(unknown)}")
 
 
-def _validate_exact_string(
-    name: str,
-    value: object,
-    *,
-    expected: str,
-) -> str:
+def _validate_supported_schema_version(value: object) -> str:
     if type(value) is not str:
-        raise ProfileConfigurationError(f"{name} must be a string")
+        raise ProfileConfigurationError("schema_version must be a string")
 
-    if value != expected:
-        raise ProfileConfigurationError(f"{name} must be '{expected}'")
+    if value not in SUPPORTED_PROFILE_SCHEMA_VERSIONS:
+        supported = ", ".join(sorted(SUPPORTED_PROFILE_SCHEMA_VERSIONS))
+        raise ProfileConfigurationError(
+            f"schema_version must be one of the supported versions: {supported}"
+        )
 
     return value
 
@@ -148,16 +151,27 @@ def _parse_padding_value(value: object) -> tuple[int, int, int]:
     return (value[0], value[1], value[2])
 
 
+def _parse_input_policy(value: object) -> InputPolicy:
+    if type(value) is not str:
+        raise ProfileConfigurationError("input_policy must be a string")
+
+    try:
+        return InputPolicy(value)
+    except ValueError as exc:
+        allowed = ", ".join(policy.value for policy in InputPolicy)
+        raise ProfileConfigurationError(f"input_policy must be one of: {allowed}") from exc
+
+
 def profile_from_mapping(payload: object) -> PreprocessingProfile:
     """Build a strict preprocessing profile from an in-memory mapping."""
     root = _validate_mapping("profile", payload)
-    _validate_field_set("profile", root, _TOP_LEVEL_FIELDS)
 
-    schema_version = _validate_exact_string(
-        "schema_version",
-        root["schema_version"],
-        expected=SUPPORTED_PROFILE_SCHEMA_VERSION,
-    )
+    if "schema_version" not in root:
+        raise ProfileConfigurationError("profile is missing required fields: schema_version")
+
+    schema_version = _validate_supported_schema_version(root["schema_version"])
+    _validate_field_set("profile", root, _PROFILE_FIELDS_BY_SCHEMA[schema_version])
+
     profile_id = _validate_identifier("profile_id", root["profile_id"])
     profile_version = _validate_semantic_version(root["profile_version"])
     model_family = _validate_identifier("model_family", root["model_family"])
@@ -176,12 +190,19 @@ def profile_from_mapping(payload: object) -> PreprocessingProfile:
     except SmartBeautyResizeError as exc:
         raise ProfileConfigurationError(f"invalid resize configuration: {exc}") from exc
 
+    input_policy = (
+        InputPolicy.AUDIT_ONLY
+        if schema_version == "1.0"
+        else _parse_input_policy(root["input_policy"])
+    )
+
     return PreprocessingProfile(
         schema_version=schema_version,
         profile_id=profile_id,
         profile_version=profile_version,
         model_family=model_family,
         resize_config=resize_config,
+        input_policy=input_policy,
     )
 
 

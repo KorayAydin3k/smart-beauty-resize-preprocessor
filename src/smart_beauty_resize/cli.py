@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -41,7 +42,13 @@ console = Console()
 error_console = Console(stderr=True)
 
 
-def _resolve_resize_config(
+@dataclass(frozen=True, slots=True)
+class _ResolvedPreprocessingSettings:
+    resize_config: ResizeConfig
+    input_policy: InputPolicy
+
+
+def _resolve_preprocessing_settings(
     *,
     profile: Path | None,
     target_width: int | None,
@@ -51,12 +58,13 @@ def _resolve_resize_config(
     padding_red: int | None,
     padding_green: int | None,
     padding_blue: int | None,
-) -> ResizeConfig:
-    """Resolve exactly one resize configuration source.
+    input_policy: InputPolicy | None,
+) -> _ResolvedPreprocessingSettings:
+    """Resolve one unambiguous preprocessing configuration source.
 
-    A versioned profile and manually supplied resize options are intentionally
-    mutually exclusive. This keeps configuration provenance unambiguous while
-    preserving the original CLI behavior when no profile is supplied.
+    A versioned profile and manually supplied preprocessing options are
+    intentionally mutually exclusive. This keeps configuration provenance
+    unambiguous while preserving the historical manual defaults.
     """
     manual_options = {
         "--target-width": target_width,
@@ -66,6 +74,7 @@ def _resolve_resize_config(
         "--padding-red": padding_red,
         "--padding-green": padding_green,
         "--padding-blue": padding_blue,
+        "--input-policy": input_policy,
     }
 
     if profile is not None:
@@ -75,26 +84,33 @@ def _resolve_resize_config(
         if provided_manual_options:
             options = ", ".join(provided_manual_options)
             raise ProfileConfigurationError(
-                f"--profile cannot be combined with manual resize options: {options}"
+                f"--profile cannot be combined with manual preprocessing options: {options}"
             )
 
-        return load_preprocessing_profile(profile).resize_config
+        loaded_profile = load_preprocessing_profile(profile)
+        return _ResolvedPreprocessingSettings(
+            resize_config=loaded_profile.resize_config,
+            input_policy=loaded_profile.input_policy,
+        )
 
     if target_width is None or target_height is None:
         raise ResizeConfigurationError(
             "--target-width and --target-height are required when --profile is not used"
         )
 
-    return ResizeConfig(
-        target_width=target_width,
-        target_height=target_height,
-        allow_upscale=True if allow_upscale is None else allow_upscale,
-        max_upscale_factor=(1.5 if max_upscale_factor is None else max_upscale_factor),
-        padding_value=(
-            127 if padding_red is None else padding_red,
-            127 if padding_green is None else padding_green,
-            127 if padding_blue is None else padding_blue,
+    return _ResolvedPreprocessingSettings(
+        resize_config=ResizeConfig(
+            target_width=target_width,
+            target_height=target_height,
+            allow_upscale=True if allow_upscale is None else allow_upscale,
+            max_upscale_factor=(1.5 if max_upscale_factor is None else max_upscale_factor),
+            padding_value=(
+                127 if padding_red is None else padding_red,
+                127 if padding_green is None else padding_green,
+                127 if padding_blue is None else padding_blue,
+            ),
         ),
+        input_policy=(InputPolicy.AUDIT_ONLY if input_policy is None else input_policy),
     )
 
 
@@ -254,17 +270,18 @@ def batch_command(
         ),
     ] = None,
     input_policy: Annotated[
-        InputPolicy,
+        InputPolicy | None,
         typer.Option(
             "--input-policy",
             case_sensitive=False,
             help=(
-                "Source-image acceptance policy. audit_only preserves historical "
-                "conversion behavior; strict_rgb8 rejects non-RGB, non-8-bit, "
-                "alpha, or non-three-channel sources."
+                "Source-image acceptance policy in manual mode. audit_only preserves "
+                "historical conversion behavior; strict_rgb8 rejects non-RGB, "
+                "non-8-bit, alpha, or non-three-channel sources. Profile mode reads "
+                "the policy from the profile."
             ),
         ),
-    ] = InputPolicy.AUDIT_ONLY,
+    ] = None,
     overwrite: Annotated[
         bool,
         typer.Option(
@@ -297,7 +314,7 @@ def batch_command(
 ) -> None:
     """Resize a directory of images and persist an auditable run manifest."""
     try:
-        resize_config = _resolve_resize_config(
+        settings = _resolve_preprocessing_settings(
             profile=profile,
             target_width=target_width,
             target_height=target_height,
@@ -306,17 +323,18 @@ def batch_command(
             padding_red=padding_red,
             padding_green=padding_green,
             padding_blue=padding_blue,
+            input_policy=input_policy,
         )
 
         batch_config = BatchConfig(
             input_dir=input_dir,
             output_dir=output_dir,
-            resize_config=resize_config,
+            resize_config=settings.resize_config,
             output_format="png",
             overwrite=overwrite,
             fail_fast=fail_fast,
             preserve_directory_structure=(preserve_directory_structure),
-            input_policy=input_policy,
+            input_policy=settings.input_policy,
         )
 
         result = process_batch(batch_config)

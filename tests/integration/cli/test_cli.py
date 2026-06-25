@@ -398,23 +398,32 @@ def _write_profile(
     *,
     target_width: int = 36,
     target_height: int = 28,
+    schema_version: str = "1.1",
+    input_policy: str = "audit_only",
 ) -> None:
+    lines = [
+        f'schema_version: "{schema_version}"',
+        'profile_id: "smart-beauty-test"',
+        f'profile_version: "{schema_version}.0"',
+        'model_family: "test"',
+    ]
+    if schema_version == "1.1":
+        lines.append(f'input_policy: "{input_policy}"')
+
+    lines.extend(
+        [
+            "resize:",
+            f"  target_width: {target_width}",
+            f"  target_height: {target_height}",
+            "  allow_upscale: true",
+            "  max_upscale_factor: 4.0",
+            "  padding_value: [127, 127, 127]",
+            "",
+        ]
+    )
+
     path.write_text(
-        "\n".join(
-            [
-                'schema_version: "1.0"',
-                'profile_id: "smart-beauty-test"',
-                'profile_version: "1.0.0"',
-                'model_family: "test"',
-                "resize:",
-                f"  target_width: {target_width}",
-                f"  target_height: {target_height}",
-                "  allow_upscale: true",
-                "  max_upscale_factor: 4.0",
-                "  padding_value: [127, 127, 127]",
-                "",
-            ]
-        ),
+        "\n".join(lines),
         encoding="utf-8",
     )
 
@@ -460,6 +469,12 @@ def test_profile_driven_batch_command(
 
     output_image = np.asarray(Image.open(output_dir / "sample.png").convert("RGB"))
     assert output_image.shape == (28, 36, 3)
+
+    run_directories = _run_directories(output_dir)
+    summary = json.loads(
+        (run_directories[0] / "run_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["input_policy"] == "audit_only"
 
 
 def test_profile_cannot_be_combined_with_manual_resize_options(
@@ -661,14 +676,49 @@ def test_invalid_input_policy_is_rejected_by_cli(
     assert _run_directories(output_dir) == []
 
 
-def test_profile_mode_accepts_explicit_input_policy(
+def test_profile_driven_strict_policy_rejects_rgba(
     tmp_path: Path,
 ) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     profile_path = tmp_path / "profile.yaml"
 
-    _write_image(input_dir / "sample.png", value=75)
+    input_dir.mkdir()
+    rgba = np.zeros((10, 20, 4), dtype=np.uint8)
+    rgba[:, :, :3] = 75
+    rgba[:, :, 3] = 128
+    Image.fromarray(rgba, mode="RGBA").save(input_dir / "rgba.png")
+    _write_profile(profile_path, input_policy="strict_rgb8")
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            str(profile_path),
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    run_directories = _run_directories(output_dir)
+    summary = json.loads(
+        (run_directories[0] / "run_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["input_policy"] == "strict_rgb8"
+    assert summary["failed"] == 1
+
+
+def test_profile_cannot_be_combined_with_explicit_input_policy(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    profile_path = tmp_path / "profile.yaml"
+    input_dir.mkdir()
     _write_profile(profile_path)
 
     result = runner.invoke(
@@ -686,9 +736,42 @@ def test_profile_mode_accepts_explicit_input_policy(
         ],
     )
 
+    assert result.exit_code == 1
+    assert "cannot be combined" in _strip_ansi(result.output)
+    assert "--input-policy" in _strip_ansi(result.output)
+    assert _run_directories(output_dir) == []
+
+
+def test_legacy_profile_defaults_to_audit_only(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    profile_path = tmp_path / "legacy.yaml"
+
+    input_dir.mkdir()
+    rgba = np.zeros((10, 20, 4), dtype=np.uint8)
+    rgba[:, :, :3] = 75
+    rgba[:, :, 3] = 128
+    Image.fromarray(rgba, mode="RGBA").save(input_dir / "rgba.png")
+    _write_profile(profile_path, schema_version="1.0")
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            str(profile_path),
+        ],
+    )
+
     assert result.exit_code == 0, result.output
     run_directories = _run_directories(output_dir)
     summary = json.loads(
         (run_directories[0] / "run_summary.json").read_text(encoding="utf-8")
     )
-    assert summary["input_policy"] == "strict_rgb8"
+    assert summary["input_policy"] == "audit_only"
