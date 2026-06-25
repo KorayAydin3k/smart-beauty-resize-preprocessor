@@ -44,6 +44,22 @@ The batch pipeline:
 - records SHA-256 provenance;
 - writes `manifest.jsonl` and `run_summary.json`.
 
+### Decode audit API
+
+The original `decode_image(...)` API still returns the same contiguous RGB
+`uint8` array. Callers that need source-format audit information can use the
+non-breaking detailed API:
+
+    from smart_beauty_resize import decode_image_with_metadata
+
+    decoded = decode_image_with_metadata("data/raw/example.png")
+    image = decoded.image
+    metadata = decoded.metadata
+
+The metadata reports source format, mode, geometry, sample bit depth, alpha and
+ICC presence, EXIF orientation handling, and RGB/bit-depth conversion signals.
+No new image rejection policy is introduced in this phase.
+
 ### Exit codes
 
 - `0`: completed without failed images;
