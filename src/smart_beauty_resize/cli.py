@@ -20,6 +20,7 @@ from smart_beauty_resize.contracts import (
     ResizeConfigurationError,
     SmartBeautyResizeError,
 )
+from smart_beauty_resize.io.contracts import InputPolicy
 from smart_beauty_resize.provenance import (
     BatchArtifactPaths,
     write_batch_artifacts,
@@ -252,6 +253,18 @@ def batch_command(
             help="Blue channel value for constant padding in manual configuration mode.",
         ),
     ] = None,
+    input_policy: Annotated[
+        InputPolicy,
+        typer.Option(
+            "--input-policy",
+            case_sensitive=False,
+            help=(
+                "Source-image acceptance policy. audit_only preserves historical "
+                "conversion behavior; strict_rgb8 rejects non-RGB, non-8-bit, "
+                "alpha, or non-three-channel sources."
+            ),
+        ),
+    ] = InputPolicy.AUDIT_ONLY,
     overwrite: Annotated[
         bool,
         typer.Option(
@@ -303,6 +316,7 @@ def batch_command(
             overwrite=overwrite,
             fail_fast=fail_fast,
             preserve_directory_structure=(preserve_directory_structure),
+            input_policy=input_policy,
         )
 
         result = process_batch(batch_config)

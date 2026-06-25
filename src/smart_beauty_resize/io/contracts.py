@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 import numpy as np
 
 from smart_beauty_resize.contracts import ImageDecodeError
+
+
+class InputPolicy(StrEnum):
+    """Supported source-image acceptance policies."""
+
+    AUDIT_ONLY = "audit_only"
+    STRICT_RGB8 = "strict_rgb8"
 
 
 @dataclass(frozen=True, slots=True)

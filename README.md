@@ -30,8 +30,8 @@ Versioned profile usage:
       --profile configs/default.yaml
 
 A profile and manual resize options are mutually exclusive. Batch controls such
-as `--overwrite`, `--fail-fast`, `--flat-output`, and `--verbose` remain available
-in either mode.
+as `--input-policy`, `--overwrite`, `--fail-fast`, `--flat-output`, and `--verbose`
+remain available in either mode.
 
 The batch pipeline:
 
@@ -59,9 +59,24 @@ non-breaking detailed API:
 
 The metadata reports source format, mode, geometry, sample bit depth, alpha and
 ICC presence, EXIF orientation handling, and RGB/bit-depth conversion signals.
-No new image rejection policy is introduced in this phase. Batch-generated
-manifest records now persist the same metadata under a nested
+Batch-generated manifest records persist the same metadata under a nested
 `decode_metadata` object. Records that fail before decoding store `null`.
+
+### Input acceptance policies
+
+The default policy preserves the historical conversion behavior:
+
+    --input-policy audit_only
+
+For model pipelines that require native three-channel RGB sources with known
+8-bit samples and no alpha/transparency, use:
+
+    --input-policy strict_rgb8
+
+Policy violations become per-image failed records unless `--fail-fast` is used.
+The selected policy is stored in each manifest item and in `run_summary.json`.
+This phase keeps the profile schema at `1.0`; policy selection remains an
+explicit batch control and is not included in the resize-only `config_sha256`.
 
 ### Exit codes
 
