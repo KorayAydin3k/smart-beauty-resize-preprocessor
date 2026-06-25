@@ -15,6 +15,10 @@ class ResizeConfigurationError(SmartBeautyResizeError, ValueError):
     """Base error for invalid resize configuration."""
 
 
+class ProfileConfigurationError(SmartBeautyResizeError, ValueError):
+    """Raised when a versioned preprocessing profile is invalid."""
+
+
 class InvalidImageDimensionsError(ResizeConfigurationError):
     """Raised when image dimensions are invalid."""
 

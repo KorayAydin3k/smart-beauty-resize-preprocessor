@@ -5,12 +5,18 @@ from __future__ import annotations
 from importlib.metadata import PackageNotFoundError, version
 
 from smart_beauty_resize.backends.opencv_backend import resize_sample
+from smart_beauty_resize.config import (
+    PreprocessingProfile,
+    load_preprocessing_profile,
+    profile_from_mapping,
+)
 from smart_beauty_resize.contracts import (
     ExcessiveUpscaleError,
     ImageDecodeError,
     InvalidImageDimensionsError,
     InvalidImageError,
     InvalidMaskError,
+    ProfileConfigurationError,
     ResizeConfig,
     ResizeConfigurationError,
     ResizePlan,
@@ -27,6 +33,7 @@ from smart_beauty_resize.io.decoder import decode_image
 __all__ = [
     "__version__",
     "ResizeConfig",
+    "PreprocessingProfile",
     "ResizePlan",
     "ResizeResult",
     "SmartBeautyResizeError",
@@ -36,11 +43,14 @@ __all__ = [
     "InvalidImageError",
     "InvalidMaskError",
     "ImageDecodeError",
+    "ProfileConfigurationError",
     "round_half_up_positive",
     "calculate_letterbox_plan",
     "apply_matrix_to_point",
     "decode_image",
     "resize_sample",
+    "profile_from_mapping",
+    "load_preprocessing_profile",
 ]
 
 try:
