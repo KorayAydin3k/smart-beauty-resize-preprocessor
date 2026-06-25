@@ -1,0 +1,1138 @@
+diff --git a/README.md b/README.md
+index b58edb7..9444987 100644
+--- a/README.md
++++ b/README.md
+@@ -43,7 +43,7 @@ The batch pipeline:
+ - uses letterbox padding without stretching or cropping;
+ - writes RGB PNG outputs;
+ - records SHA-256 provenance;
+-- writes `manifest.jsonl` and `run_summary.json`;
++- writes `manifest.jsonl`, `run_summary.json`, and `dataset_audit.json`;
+ - records source decode metadata in each manifest item when decoding succeeds.
+ 
+ ### Decode audit API
+@@ -95,6 +95,32 @@ Legacy schema `1.0` profiles remain supported and resolve to `audit_only`.
+ `--input-policy` is a manual-mode option and cannot override a profile. The
+ resize-only `config_sha256` semantics remain unchanged.
+ 
++### Dataset audit summary
++
++Every completed run now writes `dataset_audit.json` beside the manifest and run
++summary. The independent audit schema starts at `1.0` and links back to the run
++through `run_id`, `config_sha256`, and `input_policy`.
++
++The audit aggregates only observed manifest data. It includes:
++
++- processing status and error-type counts;
++- decode-metadata coverage;
++- source format, mode, bit-depth, and channel-count distributions;
++- alpha, ICC, EXIF, RGB-conversion, and bit-depth-conversion counts;
++- source width, height, and pixel-count statistics using deterministic nearest-rank
++  `p50`, `p95`, and `p99` values.
++
++Records that fail before decoding remain visible through
++`records_without_decode_metadata` and the error distribution. No source pixels,
++resize geometry, interpolation, manifest schema, or `config_sha256` semantics are
++changed by this report.
++
++Programmatic aggregation is also available:
++
++    from smart_beauty_resize.audit import build_dataset_audit_summary
++
++    audit = build_dataset_audit_summary(batch_result)
++
+ ### Exit codes
+ 
+ - `0`: completed without failed images;
+diff --git a/src/smart_beauty_resize/audit/__init__.py b/src/smart_beauty_resize/audit/__init__.py
+index e69de29..ad1cadc 100644
+--- a/src/smart_beauty_resize/audit/__init__.py
++++ b/src/smart_beauty_resize/audit/__init__.py
+@@ -0,0 +1,21 @@
++"""Dataset-level audit aggregation and serialization."""
++
++from smart_beauty_resize.audit.report import (
++    DATASET_AUDIT_SCHEMA_VERSION,
++    AuditCount,
++    DatasetAuditSummary,
++    IntegerDistributionSummary,
++    build_dataset_audit_summary,
++    dataset_audit_to_dict,
++    dataset_audit_to_json,
++)
++
++__all__ = [
++    "DATASET_AUDIT_SCHEMA_VERSION",
++    "AuditCount",
++    "DatasetAuditSummary",
++    "IntegerDistributionSummary",
++    "build_dataset_audit_summary",
++    "dataset_audit_to_dict",
++    "dataset_audit_to_json",
++]
+diff --git a/src/smart_beauty_resize/audit/report.py b/src/smart_beauty_resize/audit/report.py
+index e69de29..09d230a 100644
+--- a/src/smart_beauty_resize/audit/report.py
++++ b/src/smart_beauty_resize/audit/report.py
+@@ -0,0 +1,433 @@
++from __future__ import annotations
++
++import json
++import math
++from collections import Counter
++from dataclasses import dataclass
++from typing import Final
++
++from smart_beauty_resize.batch.contracts import (
++    BatchExecutionResult,
++    ImageProcessingRecord,
++    ProcessingStatus,
++)
++from smart_beauty_resize.contracts import (
++    ManifestSerializationError,
++    ProvenanceError,
++)
++from smart_beauty_resize.io.contracts import InputPolicy
++
++DATASET_AUDIT_SCHEMA_VERSION: Final = "1.0"
++_UNKNOWN_VALUE: Final = "unknown"
++
++
++@dataclass(frozen=True, slots=True)
++class AuditCount:
++    """One deterministic label/count entry in an audit distribution."""
++
++    label: str
++    count: int
++
++    def __post_init__(self) -> None:
++        if type(self.label) is not str or not self.label:
++            raise ProvenanceError("audit count label must be a non-empty string")
++        if type(self.count) is not int or self.count < 0:
++            raise ProvenanceError("audit count must be a non-negative integer")
++
++
++@dataclass(frozen=True, slots=True)
++class IntegerDistributionSummary:
++    """Deterministic descriptive statistics over positive integer values."""
++
++    count: int
++    minimum: int
++    maximum: int
++    mean: float
++    p50: int
++    p95: int
++    p99: int
++
++    def __post_init__(self) -> None:
++        if type(self.count) is not int or self.count <= 0:
++            raise ProvenanceError("distribution count must be a positive integer")
++
++        for field_name in ("minimum", "maximum", "p50", "p95", "p99"):
++            value = getattr(self, field_name)
++            if type(value) is not int or value <= 0:
++                raise ProvenanceError(f"distribution {field_name} must be a positive integer")
++
++        if isinstance(self.mean, bool) or not isinstance(self.mean, (int, float)):
++            raise ProvenanceError("distribution mean must be a finite positive real number")
++        if not math.isfinite(float(self.mean)) or float(self.mean) <= 0.0:
++            raise ProvenanceError("distribution mean must be a finite positive real number")
++
++        if self.minimum > self.maximum:
++            raise ProvenanceError("distribution minimum must not exceed maximum")
++
++        for percentile_name in ("p50", "p95", "p99"):
++            percentile = getattr(self, percentile_name)
++            if not self.minimum <= percentile <= self.maximum:
++                raise ProvenanceError(
++                    f"distribution {percentile_name} must be within minimum and maximum"
++                )
++
++        if not self.p50 <= self.p95 <= self.p99:
++            raise ProvenanceError("distribution percentiles must be monotonically non-decreasing")
++
++
++@dataclass(frozen=True, slots=True)
++class DatasetAuditSummary:
++    """Immutable aggregate audit summary for one completed batch run."""
++
++    schema_version: str
++    run_id: str
++    config_sha256: str
++    input_policy: InputPolicy
++    total_records: int
++    records_with_decode_metadata: int
++    records_without_decode_metadata: int
++    status_counts: tuple[AuditCount, ...]
++    source_format_counts: tuple[AuditCount, ...]
++    source_mode_counts: tuple[AuditCount, ...]
++    source_bit_depth_counts: tuple[AuditCount, ...]
++    source_channel_count_counts: tuple[AuditCount, ...]
++    error_type_counts: tuple[AuditCount, ...]
++    source_width_statistics: IntegerDistributionSummary | None
++    source_height_statistics: IntegerDistributionSummary | None
++    source_pixel_count_statistics: IntegerDistributionSummary | None
++    alpha_present_count: int
++    icc_profile_present_count: int
++    exif_orientation_present_count: int
++    exif_orientation_applied_count: int
++    rgb_conversion_applied_count: int
++    bit_depth_conversion_applied_count: int
++
++    def __post_init__(self) -> None:
++        if self.schema_version != DATASET_AUDIT_SCHEMA_VERSION:
++            raise ProvenanceError(
++                f"dataset audit schema_version must be '{DATASET_AUDIT_SCHEMA_VERSION}'"
++            )
++        if type(self.run_id) is not str or not self.run_id:
++            raise ProvenanceError("dataset audit run_id must be a non-empty string")
++        if (
++            type(self.config_sha256) is not str
++            or len(self.config_sha256) != 64
++            or self.config_sha256 != self.config_sha256.lower()
++            or any(character not in "0123456789abcdef" for character in self.config_sha256)
++        ):
++            raise ProvenanceError("dataset audit config_sha256 must be lowercase SHA-256 hex")
++        if not isinstance(self.input_policy, InputPolicy):
++            raise ProvenanceError("dataset audit input_policy must be an InputPolicy")
++
++        for field_name in (
++            "total_records",
++            "records_with_decode_metadata",
++            "records_without_decode_metadata",
++            "alpha_present_count",
++            "icc_profile_present_count",
++            "exif_orientation_present_count",
++            "exif_orientation_applied_count",
++            "rgb_conversion_applied_count",
++            "bit_depth_conversion_applied_count",
++        ):
++            value = getattr(self, field_name)
++            if type(value) is not int or value < 0:
++                raise ProvenanceError(f"dataset audit {field_name} must be non-negative")
++
++        if (
++            self.records_with_decode_metadata + self.records_without_decode_metadata
++            != self.total_records
++        ):
++            raise ProvenanceError("decode metadata counts must equal total_records")
++
++        count_fields = (
++            "status_counts",
++            "source_format_counts",
++            "source_mode_counts",
++            "source_bit_depth_counts",
++            "source_channel_count_counts",
++            "error_type_counts",
++        )
++        for field_name in count_fields:
++            entries = getattr(self, field_name)
++            _validate_count_entries(field_name, entries)
++
++        if _count_total(self.status_counts) != self.total_records:
++            raise ProvenanceError("status_counts must sum to total_records")
++
++        metadata_distributions = (
++            self.source_format_counts,
++            self.source_mode_counts,
++            self.source_bit_depth_counts,
++            self.source_channel_count_counts,
++        )
++        if any(
++            _count_total(entries) != self.records_with_decode_metadata
++            for entries in metadata_distributions
++        ):
++            raise ProvenanceError(
++                "source metadata distributions must sum to records_with_decode_metadata"
++            )
++
++        failed_or_skipped = _count_for_label(
++            self.status_counts,
++            ProcessingStatus.FAILED.value,
++        ) + _count_for_label(
++            self.status_counts,
++            ProcessingStatus.SKIPPED.value,
++        )
++        if _count_total(self.error_type_counts) != failed_or_skipped:
++            raise ProvenanceError("error_type_counts must cover failed and skipped records")
++
++        statistics = (
++            self.source_width_statistics,
++            self.source_height_statistics,
++            self.source_pixel_count_statistics,
++        )
++        if self.records_with_decode_metadata == 0:
++            if any(value is not None for value in statistics):
++                raise ProvenanceError("source statistics must be None without decode metadata")
++        else:
++            if any(value is None for value in statistics):
++                raise ProvenanceError("source statistics are required with decode metadata")
++            if any(
++                value is not None and value.count != self.records_with_decode_metadata
++                for value in statistics
++            ):
++                raise ProvenanceError(
++                    "source statistics counts must equal records_with_decode_metadata"
++                )
++
++        metadata_flag_counts = (
++            self.alpha_present_count,
++            self.icc_profile_present_count,
++            self.exif_orientation_present_count,
++            self.exif_orientation_applied_count,
++            self.rgb_conversion_applied_count,
++            self.bit_depth_conversion_applied_count,
++        )
++        if any(count > self.records_with_decode_metadata for count in metadata_flag_counts):
++            raise ProvenanceError("metadata flag counts cannot exceed metadata coverage")
++        if self.exif_orientation_applied_count > self.exif_orientation_present_count:
++            raise ProvenanceError(
++                "exif_orientation_applied_count cannot exceed orientation presence"
++            )
++
++    @property
++    def decode_metadata_coverage_percent(self) -> float:
++        """Return the percentage of records with source decode metadata."""
++        if self.total_records == 0:
++            return 0.0
++        return (self.records_with_decode_metadata / self.total_records) * 100.0
++
++
++def _validate_count_entries(
++    field_name: str,
++    entries: object,
++) -> None:
++    if type(entries) is not tuple:
++        raise ProvenanceError(f"dataset audit {field_name} must be a tuple")
++    if any(not isinstance(entry, AuditCount) for entry in entries):
++        raise ProvenanceError(f"dataset audit {field_name} must contain AuditCount values")
++
++    labels = [entry.label for entry in entries]
++    if labels != sorted(labels):
++        raise ProvenanceError(f"dataset audit {field_name} must be sorted by label")
++    if len(labels) != len(set(labels)):
++        raise ProvenanceError(f"dataset audit {field_name} labels must be unique")
++
++
++def _count_total(entries: tuple[AuditCount, ...]) -> int:
++    return sum(entry.count for entry in entries)
++
++
++def _count_for_label(
++    entries: tuple[AuditCount, ...],
++    label: str,
++) -> int:
++    return next((entry.count for entry in entries if entry.label == label), 0)
++
++
++def _counter_entries(counter: Counter[str]) -> tuple[AuditCount, ...]:
++    return tuple(
++        AuditCount(label=label, count=count)
++        for label, count in sorted(counter.items())
++        if count > 0
++    )
++
++
++def _status_entries(records: tuple[ImageProcessingRecord, ...]) -> tuple[AuditCount, ...]:
++    counter = Counter(record.status.value for record in records)
++    return tuple(
++        AuditCount(label=status.value, count=counter[status.value])
++        for status in sorted(ProcessingStatus, key=lambda value: value.value)
++    )
++
++
++def _nearest_rank(sorted_values: tuple[int, ...], percentile: int) -> int:
++    rank = math.ceil((percentile / 100.0) * len(sorted_values))
++    return sorted_values[max(0, rank - 1)]
++
++
++def _integer_statistics(values: list[int]) -> IntegerDistributionSummary | None:
++    if not values:
++        return None
++
++    ordered = tuple(sorted(values))
++    return IntegerDistributionSummary(
++        count=len(ordered),
++        minimum=ordered[0],
++        maximum=ordered[-1],
++        mean=sum(ordered) / len(ordered),
++        p50=_nearest_rank(ordered, 50),
++        p95=_nearest_rank(ordered, 95),
++        p99=_nearest_rank(ordered, 99),
++    )
++
++
++def build_dataset_audit_summary(
++    result: BatchExecutionResult,
++) -> DatasetAuditSummary:
++    """Aggregate per-image records into one deterministic dataset audit summary."""
++    if not isinstance(result, BatchExecutionResult):
++        raise ProvenanceError("result must be a BatchExecutionResult")
++
++    records = result.records
++    records_with_metadata = tuple(
++        record for record in records if record.decode_metadata is not None
++    )
++    metadata_values = tuple(
++        record.decode_metadata
++        for record in records_with_metadata
++        if record.decode_metadata is not None
++    )
++
++    source_format_counts = Counter(metadata.source_format for metadata in metadata_values)
++    source_mode_counts = Counter(metadata.source_mode for metadata in metadata_values)
++    source_bit_depth_counts = Counter(
++        _UNKNOWN_VALUE if metadata.source_bit_depth is None else str(metadata.source_bit_depth)
++        for metadata in metadata_values
++    )
++    source_channel_count_counts = Counter(
++        str(metadata.source_channel_count) for metadata in metadata_values
++    )
++    error_type_counts = Counter(
++        record.error_type
++        for record in records
++        if record.error_type is not None
++    )
++
++    source_widths = [metadata.source_width for metadata in metadata_values]
++    source_heights = [metadata.source_height for metadata in metadata_values]
++    source_pixel_counts = [
++        metadata.source_width * metadata.source_height for metadata in metadata_values
++    ]
++
++    return DatasetAuditSummary(
++        schema_version=DATASET_AUDIT_SCHEMA_VERSION,
++        run_id=result.summary.run_id,
++        config_sha256=result.summary.config_sha256,
++        input_policy=result.summary.input_policy,
++        total_records=len(records),
++        records_with_decode_metadata=len(metadata_values),
++        records_without_decode_metadata=len(records) - len(metadata_values),
++        status_counts=_status_entries(records),
++        source_format_counts=_counter_entries(source_format_counts),
++        source_mode_counts=_counter_entries(source_mode_counts),
++        source_bit_depth_counts=_counter_entries(source_bit_depth_counts),
++        source_channel_count_counts=_counter_entries(source_channel_count_counts),
++        error_type_counts=_counter_entries(error_type_counts),
++        source_width_statistics=_integer_statistics(source_widths),
++        source_height_statistics=_integer_statistics(source_heights),
++        source_pixel_count_statistics=_integer_statistics(source_pixel_counts),
++        alpha_present_count=sum(metadata.alpha_present for metadata in metadata_values),
++        icc_profile_present_count=sum(
++            metadata.icc_profile_present for metadata in metadata_values
++        ),
++        exif_orientation_present_count=sum(
++            metadata.exif_orientation is not None for metadata in metadata_values
++        ),
++        exif_orientation_applied_count=sum(
++            metadata.exif_orientation_applied for metadata in metadata_values
++        ),
++        rgb_conversion_applied_count=sum(
++            metadata.rgb_conversion_applied for metadata in metadata_values
++        ),
++        bit_depth_conversion_applied_count=sum(
++            metadata.bit_depth_conversion_applied for metadata in metadata_values
++        ),
++    )
++
++
++def _counts_to_dict(entries: tuple[AuditCount, ...]) -> dict[str, int]:
++    return {entry.label: entry.count for entry in entries}
++
++
++def _statistics_to_dict(
++    statistics: IntegerDistributionSummary | None,
++) -> dict[str, int | float] | None:
++    if statistics is None:
++        return None
++    return {
++        "count": statistics.count,
++        "maximum": statistics.maximum,
++        "mean": statistics.mean,
++        "minimum": statistics.minimum,
++        "p50": statistics.p50,
++        "p95": statistics.p95,
++        "p99": statistics.p99,
++    }
++
++
++def dataset_audit_to_dict(
++    summary: DatasetAuditSummary,
++) -> dict[str, object]:
++    """Convert one dataset audit summary into a JSON-safe dictionary."""
++    if not isinstance(summary, DatasetAuditSummary):
++        raise ManifestSerializationError("summary must be a DatasetAuditSummary")
++
++    return {
++        "alpha_present_count": summary.alpha_present_count,
++        "bit_depth_conversion_applied_count": summary.bit_depth_conversion_applied_count,
++        "config_sha256": summary.config_sha256,
++        "decode_metadata_coverage_percent": summary.decode_metadata_coverage_percent,
++        "error_type_counts": _counts_to_dict(summary.error_type_counts),
++        "exif_orientation_applied_count": summary.exif_orientation_applied_count,
++        "exif_orientation_present_count": summary.exif_orientation_present_count,
++        "icc_profile_present_count": summary.icc_profile_present_count,
++        "input_policy": summary.input_policy.value,
++        "records_with_decode_metadata": summary.records_with_decode_metadata,
++        "records_without_decode_metadata": summary.records_without_decode_metadata,
++        "rgb_conversion_applied_count": summary.rgb_conversion_applied_count,
++        "run_id": summary.run_id,
++        "schema_version": summary.schema_version,
++        "source_bit_depth_counts": _counts_to_dict(summary.source_bit_depth_counts),
++        "source_channel_count_counts": _counts_to_dict(
++            summary.source_channel_count_counts
++        ),
++        "source_format_counts": _counts_to_dict(summary.source_format_counts),
++        "source_height_statistics": _statistics_to_dict(
++            summary.source_height_statistics
++        ),
++        "source_mode_counts": _counts_to_dict(summary.source_mode_counts),
++        "source_pixel_count_statistics": _statistics_to_dict(
++            summary.source_pixel_count_statistics
++        ),
++        "source_width_statistics": _statistics_to_dict(summary.source_width_statistics),
++        "status_counts": _counts_to_dict(summary.status_counts),
++        "total_records": summary.total_records,
++    }
++
++
++def dataset_audit_to_json(summary: DatasetAuditSummary) -> str:
++    """Serialize one dataset audit summary as deterministic compact JSON."""
++    try:
++        return json.dumps(
++            dataset_audit_to_dict(summary),
++            sort_keys=True,
++            separators=(",", ":"),
++            ensure_ascii=False,
++            allow_nan=False,
++        )
++    except (TypeError, ValueError, OverflowError) as exc:
++        raise ManifestSerializationError("unable to serialize dataset audit payload") from exc
+diff --git a/src/smart_beauty_resize/cli.py b/src/smart_beauty_resize/cli.py
+index a504049..66e2886 100644
+--- a/src/smart_beauty_resize/cli.py
++++ b/src/smart_beauty_resize/cli.py
+@@ -179,6 +179,7 @@ def _print_artifact_paths(
+     console.print(f"[bold]Run directory:[/bold] {artifacts.run_directory}")
+     console.print(f"[bold]Manifest:[/bold] {artifacts.manifest_path}")
+     console.print(f"[bold]Summary:[/bold] {artifacts.summary_path}")
++    console.print(f"[bold]Dataset audit:[/bold] {artifacts.dataset_audit_path}")
+ 
+ 
+ @app.callback()
+diff --git a/src/smart_beauty_resize/provenance/__init__.py b/src/smart_beauty_resize/provenance/__init__.py
+index 6645cc3..5c2ce55 100644
+--- a/src/smart_beauty_resize/provenance/__init__.py
++++ b/src/smart_beauty_resize/provenance/__init__.py
+@@ -13,6 +13,7 @@ from smart_beauty_resize.provenance.manifest import (
+     summary_to_json,
+ )
+ from smart_beauty_resize.provenance.writer import (
++    DATASET_AUDIT_FILENAME,
+     MANIFEST_FILENAME,
+     RUNS_DIRECTORY_NAME,
+     SUMMARY_FILENAME,
+@@ -21,6 +22,7 @@ from smart_beauty_resize.provenance.writer import (
+ )
+ 
+ __all__ = [
++    "DATASET_AUDIT_FILENAME",
+     "MANIFEST_FILENAME",
+     "RUNS_DIRECTORY_NAME",
+     "SUMMARY_FILENAME",
+diff --git a/src/smart_beauty_resize/provenance/writer.py b/src/smart_beauty_resize/provenance/writer.py
+index 3f7be2c..11a33a1 100644
+--- a/src/smart_beauty_resize/provenance/writer.py
++++ b/src/smart_beauty_resize/provenance/writer.py
+@@ -12,6 +12,7 @@ from smart_beauty_resize.batch.contracts import BatchExecutionResult
+ from smart_beauty_resize.contracts import (
+     ManifestSerializationError,
+     ManifestWriteError,
++    ProvenanceError,
+ )
+ from smart_beauty_resize.provenance.manifest import (
+     record_to_json_line,
+@@ -21,6 +22,7 @@ from smart_beauty_resize.provenance.manifest import (
+ RUNS_DIRECTORY_NAME = "_runs"
+ MANIFEST_FILENAME = "manifest.jsonl"
+ SUMMARY_FILENAME = "run_summary.json"
++DATASET_AUDIT_FILENAME = "dataset_audit.json"
+ 
+ _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+ 
+@@ -32,6 +34,7 @@ class BatchArtifactPaths:
+     run_directory: Path
+     manifest_path: Path
+     summary_path: Path
++    dataset_audit_path: Path
+ 
+ 
+ def _absolute_without_symlink_resolution(path: Path) -> Path:
+@@ -152,6 +155,33 @@ def _write_summary_file(
+         raise ManifestWriteError(f"unable to write summary file: {path}") from exc
+ 
+ 
++
++def _write_dataset_audit_file(
++    path: Path,
++    result: BatchExecutionResult,
++) -> None:
++    from smart_beauty_resize.audit import (
++        build_dataset_audit_summary,
++        dataset_audit_to_json,
++    )
++
++    try:
++        content = dataset_audit_to_json(build_dataset_audit_summary(result)) + "\n"
++
++        with path.open(
++            "x",
++            encoding="utf-8",
++            newline="\n",
++        ) as file_handle:
++            file_handle.write(content)
++            file_handle.flush()
++            os.fsync(file_handle.fileno())
++
++    except ManifestSerializationError:
++        raise
++    except (OSError, UnicodeError) as exc:
++        raise ManifestWriteError(f"unable to write dataset audit file: {path}") from exc
++
+ def write_batch_artifacts(
+     result: BatchExecutionResult,
+     output_root: Path,
+@@ -203,6 +233,7 @@ def write_batch_artifacts(
+ 
+         manifest_path = staging_directory / MANIFEST_FILENAME
+         summary_path = staging_directory / SUMMARY_FILENAME
++        dataset_audit_path = staging_directory / DATASET_AUDIT_FILENAME
+ 
+         _write_manifest_file(
+             manifest_path,
+@@ -212,6 +243,10 @@ def write_batch_artifacts(
+             summary_path,
+             result,
+         )
++        _write_dataset_audit_file(
++            dataset_audit_path,
++            result,
++        )
+ 
+         if not manifest_path.is_file():
+             raise ManifestWriteError("staged manifest file does not exist")
+@@ -222,6 +257,12 @@ def write_batch_artifacts(
+         if summary_path.stat().st_size <= 0:
+             raise ManifestWriteError("staged summary file is empty")
+ 
++        if not dataset_audit_path.is_file():
++            raise ManifestWriteError("staged dataset audit file does not exist")
++
++        if dataset_audit_path.stat().st_size <= 0:
++            raise ManifestWriteError("staged dataset audit file is empty")
++
+         try:
+             os.rename(
+                 staging_directory,
+@@ -235,6 +276,7 @@ def write_batch_artifacts(
+     except (
+         ManifestSerializationError,
+         ManifestWriteError,
++        ProvenanceError,
+     ):
+         if staging_directory is not None:
+             shutil.rmtree(
+@@ -258,12 +300,18 @@ def write_batch_artifacts(
+ 
+     final_manifest_path = final_run_directory / MANIFEST_FILENAME
+     final_summary_path = final_run_directory / SUMMARY_FILENAME
++    final_dataset_audit_path = final_run_directory / DATASET_AUDIT_FILENAME
+ 
+-    if not final_manifest_path.is_file() or not final_summary_path.is_file():
++    if (
++        not final_manifest_path.is_file()
++        or not final_summary_path.is_file()
++        or not final_dataset_audit_path.is_file()
++    ):
+         raise ManifestWriteError("published manifest bundle is incomplete")
+ 
+     return BatchArtifactPaths(
+         run_directory=final_run_directory,
+         manifest_path=final_manifest_path,
+         summary_path=final_summary_path,
++        dataset_audit_path=final_dataset_audit_path,
+     )
+diff --git a/tests/integration/batch/test_manifest_writer.py b/tests/integration/batch/test_manifest_writer.py
+index 8991fb5..4e030a7 100644
+--- a/tests/integration/batch/test_manifest_writer.py
++++ b/tests/integration/batch/test_manifest_writer.py
+@@ -17,9 +17,11 @@ from smart_beauty_resize.batch import (
+ from smart_beauty_resize.contracts import (
+     ManifestSerializationError,
+     ManifestWriteError,
++    ProvenanceError,
+     SmartBeautyResizeError,
+ )
+ from smart_beauty_resize.provenance import (
++    DATASET_AUDIT_FILENAME,
+     MANIFEST_FILENAME,
+     RUNS_DIRECTORY_NAME,
+     SUMMARY_FILENAME,
+@@ -79,6 +81,7 @@ def test_write_batch_artifacts_persists_records_and_summary(
+     assert artifacts.run_directory == expected_directory
+     assert artifacts.manifest_path.name == MANIFEST_FILENAME
+     assert artifacts.summary_path.name == SUMMARY_FILENAME
++    assert artifacts.dataset_audit_path.name == DATASET_AUDIT_FILENAME
+ 
+     manifest_lines = artifacts.manifest_path.read_text(encoding="utf-8").splitlines()
+ 
+@@ -106,6 +109,26 @@ def test_write_batch_artifacts_persists_records_and_summary(
+     assert summary["failed"] == result.summary.failed
+     assert summary["skipped"] == result.summary.skipped
+ 
++    audit = json.loads(artifacts.dataset_audit_path.read_text(encoding="utf-8"))
++
++    assert audit["schema_version"] == "1.0"
++    assert audit["run_id"] == result.summary.run_id
++    assert audit["config_sha256"] == result.summary.config_sha256
++    assert audit["input_policy"] == "audit_only"
++    assert audit["total_records"] == 2
++    assert audit["records_with_decode_metadata"] == 1
++    assert audit["records_without_decode_metadata"] == 1
++    assert audit["decode_metadata_coverage_percent"] == 50.0
++    assert audit["status_counts"] == {"failed": 1, "skipped": 0, "success": 1}
++    assert audit["source_format_counts"] == {"JPEG": 1}
++    assert audit["source_mode_counts"] == {"RGB": 1}
++    assert audit["source_bit_depth_counts"] == {"8": 1}
++    assert audit["source_channel_count_counts"] == {"3": 1}
++    assert audit["error_type_counts"] == {"ImageDecodeError": 1}
++    assert audit["source_width_statistics"]["maximum"] == 20
++    assert audit["source_height_statistics"]["maximum"] == 10
++    assert audit["source_pixel_count_statistics"]["maximum"] == 200
++
+ 
+ def test_empty_batch_writes_empty_manifest(
+     tmp_path: Path,
+@@ -125,6 +148,12 @@ def test_empty_batch_writes_empty_manifest(
+     summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
+     assert summary["total_discovered"] == 0
+ 
++    audit = json.loads(artifacts.dataset_audit_path.read_text(encoding="utf-8"))
++    assert audit["total_records"] == 0
++    assert audit["records_with_decode_metadata"] == 0
++    assert audit["records_without_decode_metadata"] == 0
++    assert audit["source_width_statistics"] is None
++
+ 
+ def test_existing_run_artifacts_are_not_overwritten(
+     tmp_path: Path,
+@@ -137,6 +166,7 @@ def test_existing_run_artifacts_are_not_overwritten(
+     )
+     first_manifest = first.manifest_path.read_bytes()
+     first_summary = first.summary_path.read_bytes()
++    first_audit = first.dataset_audit_path.read_bytes()
+ 
+     with pytest.raises(
+         ManifestWriteError,
+@@ -149,6 +179,7 @@ def test_existing_run_artifacts_are_not_overwritten(
+ 
+     assert first.manifest_path.read_bytes() == first_manifest
+     assert first.summary_path.read_bytes() == first_summary
++    assert first.dataset_audit_path.read_bytes() == first_audit
+ 
+ 
+ def test_serialization_failure_leaves_no_partial_run(
+@@ -181,6 +212,30 @@ def test_serialization_failure_leaves_no_partial_run(
+     assert list(runs_root.glob(f".{result.summary.run_id}.*")) == []
+ 
+ 
++def test_dataset_audit_failure_leaves_no_partial_run(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    result, output_dir = _batch_result(tmp_path)
++
++    def fail_dataset_audit(result_value: object) -> object:
++        del result_value
++        raise ProvenanceError("simulated dataset audit failure")
++
++    monkeypatch.setattr(
++        "smart_beauty_resize.audit.build_dataset_audit_summary",
++        fail_dataset_audit,
++    )
++
++    with pytest.raises(ProvenanceError, match="simulated dataset audit failure"):
++        write_batch_artifacts(result, output_dir)
++
++    runs_root = output_dir / RUNS_DIRECTORY_NAME
++
++    assert not (runs_root / result.summary.run_id).exists()
++    assert list(runs_root.glob(f".{result.summary.run_id}.*")) == []
++
++
+ def test_writer_rejects_unsafe_run_id(
+     tmp_path: Path,
+ ) -> None:
+diff --git a/tests/integration/cli/test_cli.py b/tests/integration/cli/test_cli.py
+index e9e2289..7d23835 100644
+--- a/tests/integration/cli/test_cli.py
++++ b/tests/integration/cli/test_cli.py
+@@ -115,6 +115,7 @@ def test_successful_batch_command(
+     assert result.exit_code == 0, result.output
+     assert "Successful" in result.output
+     assert "Manifest" in result.output
++    assert "Dataset audit" in result.output
+ 
+     assert (output_dir / "sample.png").is_file()
+ 
+@@ -123,6 +124,7 @@ def test_successful_batch_command(
+     assert len(run_directories) == 1
+     assert (run_directories[0] / "manifest.jsonl").is_file()
+     assert (run_directories[0] / "run_summary.json").is_file()
++    assert (run_directories[0] / "dataset_audit.json").is_file()
+ 
+     summary = json.loads((run_directories[0] / "run_summary.json").read_text(encoding="utf-8"))
+ 
+@@ -132,6 +134,14 @@ def test_successful_batch_command(
+     assert summary["skipped"] == 0
+     assert summary["input_policy"] == "audit_only"
+ 
++    audit = json.loads(
++        (run_directories[0] / "dataset_audit.json").read_text(encoding="utf-8")
++    )
++    assert audit["total_records"] == 1
++    assert audit["records_with_decode_metadata"] == 1
++    assert audit["records_without_decode_metadata"] == 0
++    assert audit["source_format_counts"] == {"JPEG": 1}
++
+ 
+ def test_corrupt_image_exits_two_and_writes_manifest(
+     tmp_path: Path,
+@@ -178,6 +188,14 @@ def test_corrupt_image_exits_two_and_writes_manifest(
+     assert summary["failed"] == 1
+     assert summary["skipped"] == 0
+ 
++    audit = json.loads(
++        (run_directories[0] / "dataset_audit.json").read_text(encoding="utf-8")
++    )
++    assert audit["total_records"] == 2
++    assert audit["records_with_decode_metadata"] == 1
++    assert audit["records_without_decode_metadata"] == 1
++    assert audit["error_type_counts"] == {"ImageDecodeError": 1}
++
+ 
+ def test_second_run_skips_existing_output(
+     tmp_path: Path,
+diff --git a/tests/unit/audit/test_dataset_summary.py b/tests/unit/audit/test_dataset_summary.py
+new file mode 100644
+index 0000000..c474a81
+--- /dev/null
++++ b/tests/unit/audit/test_dataset_summary.py
+@@ -0,0 +1,307 @@
++from __future__ import annotations
++
++import json
++from dataclasses import replace
++from datetime import UTC, datetime
++from pathlib import Path
++
++import pytest
++
++from smart_beauty_resize.audit import (
++    DATASET_AUDIT_SCHEMA_VERSION,
++    build_dataset_audit_summary,
++    dataset_audit_to_dict,
++    dataset_audit_to_json,
++)
++from smart_beauty_resize.batch import (
++    BatchExecutionResult,
++    BatchRunSummary,
++    ImageProcessingRecord,
++    ProcessingStatus,
++)
++from smart_beauty_resize.contracts import (
++    ManifestSerializationError,
++    ProvenanceError,
++)
++from smart_beauty_resize.io import ImageDecodeMetadata, InputPolicy
++
++CONFIG_HASH = "a" * 64
++SOURCE_HASH = "b" * 64
++OUTPUT_HASH = "c" * 64
++
++
++def _metadata(
++    *,
++    source_format: str,
++    source_mode: str,
++    source_width: int,
++    source_height: int,
++    source_bit_depth: int | None,
++    source_channel_count: int,
++    alpha_present: bool = False,
++    icc_profile_present: bool = False,
++    exif_orientation: int | None = None,
++    exif_orientation_applied: bool = False,
++    rgb_conversion_applied: bool = False,
++    bit_depth_conversion_applied: bool = False,
++) -> ImageDecodeMetadata:
++    return ImageDecodeMetadata(
++        source_format=source_format,
++        source_mode=source_mode,
++        source_width=source_width,
++        source_height=source_height,
++        decoded_width=source_width,
++        decoded_height=source_height,
++        source_bit_depth=source_bit_depth,
++        source_channel_count=source_channel_count,
++        alpha_present=alpha_present,
++        icc_profile_present=icc_profile_present,
++        exif_orientation=exif_orientation,
++        exif_orientation_applied=exif_orientation_applied,
++        rgb_conversion_applied=rgb_conversion_applied,
++        bit_depth_conversion_applied=bit_depth_conversion_applied,
++    )
++
++
++def _record(
++    *,
++    source_path: str,
++    status: ProcessingStatus,
++    metadata: ImageDecodeMetadata | None,
++    error_type: str | None = None,
++) -> ImageProcessingRecord:
++    if status is ProcessingStatus.SUCCESS:
++        return ImageProcessingRecord(
++            schema_version="1.2",
++            source_relative_path=Path(source_path),
++            output_relative_path=Path(source_path).with_suffix(".png"),
++            status=status,
++            source_sha256=SOURCE_HASH,
++            output_sha256=OUTPUT_HASH,
++            config_sha256=CONFIG_HASH,
++            original_width=metadata.source_width if metadata is not None else 100,
++            original_height=metadata.source_height if metadata is not None else 100,
++            resized_width=32,
++            resized_height=32,
++            target_width=32,
++            target_height=32,
++            pad_left=0,
++            pad_top=0,
++            pad_right=0,
++            pad_bottom=0,
++            interpolation="INTER_AREA",
++            processing_time_ms=1.0,
++            error_type=None,
++            error_message=None,
++            decode_metadata=metadata,
++            input_policy=InputPolicy.STRICT_RGB8,
++        )
++
++    return ImageProcessingRecord(
++        schema_version="1.2",
++        source_relative_path=Path(source_path),
++        output_relative_path=None,
++        status=status,
++        source_sha256=SOURCE_HASH,
++        output_sha256=None,
++        config_sha256=CONFIG_HASH,
++        original_width=None,
++        original_height=None,
++        resized_width=None,
++        resized_height=None,
++        target_width=32,
++        target_height=32,
++        pad_left=None,
++        pad_top=None,
++        pad_right=None,
++        pad_bottom=None,
++        interpolation=None,
++        processing_time_ms=1.0,
++        error_type=error_type,
++        error_message="expected test failure",
++        decode_metadata=metadata,
++        input_policy=InputPolicy.STRICT_RGB8,
++    )
++
++
++def _result() -> BatchExecutionResult:
++    records = (
++        _record(
++            source_path="rgb.jpg",
++            status=ProcessingStatus.SUCCESS,
++            metadata=_metadata(
++                source_format="JPEG",
++                source_mode="RGB",
++                source_width=100,
++                source_height=200,
++                source_bit_depth=8,
++                source_channel_count=3,
++                icc_profile_present=True,
++                exif_orientation=6,
++                exif_orientation_applied=True,
++            ),
++        ),
++        _record(
++            source_path="rgba.png",
++            status=ProcessingStatus.FAILED,
++            metadata=_metadata(
++                source_format="PNG",
++                source_mode="RGBA",
++                source_width=400,
++                source_height=300,
++                source_bit_depth=None,
++                source_channel_count=4,
++                alpha_present=True,
++                rgb_conversion_applied=True,
++                bit_depth_conversion_applied=True,
++            ),
++            error_type="InputPolicyViolationError",
++        ),
++        _record(
++            source_path="corrupt.jpg",
++            status=ProcessingStatus.FAILED,
++            metadata=None,
++            error_type="ImageDecodeError",
++        ),
++        _record(
++            source_path="existing.png",
++            status=ProcessingStatus.SKIPPED,
++            metadata=None,
++            error_type="OutputExistsError",
++        ),
++    )
++    summary = BatchRunSummary(
++        schema_version="1.2",
++        run_id="20260625T160000Z-audit",
++        started_at_utc=datetime(2026, 6, 25, 16, 0, tzinfo=UTC),
++        finished_at_utc=datetime(2026, 6, 25, 16, 1, tzinfo=UTC),
++        total_discovered=4,
++        successful=1,
++        failed=2,
++        skipped=1,
++        target_width=32,
++        target_height=32,
++        config_sha256=CONFIG_HASH,
++        input_policy=InputPolicy.STRICT_RGB8,
++    )
++    return BatchExecutionResult(records=records, summary=summary)
++
++
++def _empty_result() -> BatchExecutionResult:
++    summary = BatchRunSummary(
++        schema_version="1.2",
++        run_id="20260625T160000Z-empty",
++        started_at_utc=datetime(2026, 6, 25, 16, 0, tzinfo=UTC),
++        finished_at_utc=datetime(2026, 6, 25, 16, 0, tzinfo=UTC),
++        total_discovered=0,
++        successful=0,
++        failed=0,
++        skipped=0,
++        target_width=32,
++        target_height=32,
++        config_sha256=CONFIG_HASH,
++        input_policy=InputPolicy.AUDIT_ONLY,
++    )
++    return BatchExecutionResult(records=(), summary=summary)
++
++
++def test_build_dataset_audit_summary_aggregates_metadata_and_errors() -> None:
++    summary = build_dataset_audit_summary(_result())
++    payload = dataset_audit_to_dict(summary)
++
++    assert summary.schema_version == DATASET_AUDIT_SCHEMA_VERSION
++    assert summary.decode_metadata_coverage_percent == 50.0
++    assert payload["run_id"] == "20260625T160000Z-audit"
++    assert payload["input_policy"] == "strict_rgb8"
++    assert payload["total_records"] == 4
++    assert payload["records_with_decode_metadata"] == 2
++    assert payload["records_without_decode_metadata"] == 2
++    assert payload["status_counts"] == {"failed": 2, "skipped": 1, "success": 1}
++    assert payload["source_format_counts"] == {"JPEG": 1, "PNG": 1}
++    assert payload["source_mode_counts"] == {"RGB": 1, "RGBA": 1}
++    assert payload["source_bit_depth_counts"] == {"8": 1, "unknown": 1}
++    assert payload["source_channel_count_counts"] == {"3": 1, "4": 1}
++    assert payload["error_type_counts"] == {
++        "ImageDecodeError": 1,
++        "InputPolicyViolationError": 1,
++        "OutputExistsError": 1,
++    }
++    assert payload["alpha_present_count"] == 1
++    assert payload["icc_profile_present_count"] == 1
++    assert payload["exif_orientation_present_count"] == 1
++    assert payload["exif_orientation_applied_count"] == 1
++    assert payload["rgb_conversion_applied_count"] == 1
++    assert payload["bit_depth_conversion_applied_count"] == 1
++    assert payload["source_width_statistics"] == {
++        "count": 2,
++        "maximum": 400,
++        "mean": 250.0,
++        "minimum": 100,
++        "p50": 100,
++        "p95": 400,
++        "p99": 400,
++    }
++    assert payload["source_height_statistics"] == {
++        "count": 2,
++        "maximum": 300,
++        "mean": 250.0,
++        "minimum": 200,
++        "p50": 200,
++        "p95": 300,
++        "p99": 300,
++    }
++    assert payload["source_pixel_count_statistics"] == {
++        "count": 2,
++        "maximum": 120000,
++        "mean": 70000.0,
++        "minimum": 20000,
++        "p50": 20000,
++        "p95": 120000,
++        "p99": 120000,
++    }
++
++
++def test_empty_dataset_audit_is_explicit_and_serializable() -> None:
++    summary = build_dataset_audit_summary(_empty_result())
++    payload = json.loads(dataset_audit_to_json(summary))
++
++    assert payload["total_records"] == 0
++    assert payload["decode_metadata_coverage_percent"] == 0.0
++    assert payload["status_counts"] == {"failed": 0, "skipped": 0, "success": 0}
++    assert payload["source_format_counts"] == {}
++    assert payload["error_type_counts"] == {}
++    assert payload["source_width_statistics"] is None
++    assert payload["source_height_statistics"] is None
++    assert payload["source_pixel_count_statistics"] is None
++
++
++def test_dataset_audit_json_is_deterministic_and_compact() -> None:
++    summary = build_dataset_audit_summary(_result())
++
++    first = dataset_audit_to_json(summary)
++    second = dataset_audit_to_json(summary)
++
++    assert first == second
++    assert "\n" not in first
++    assert first == json.dumps(
++        json.loads(first),
++        sort_keys=True,
++        separators=(",", ":"),
++        ensure_ascii=False,
++        allow_nan=False,
++    )
++
++
++def test_dataset_audit_rejects_inconsistent_coverage() -> None:
++    summary = build_dataset_audit_summary(_result())
++
++    with pytest.raises(ProvenanceError, match="decode metadata counts"):
++        replace(summary, records_without_decode_metadata=1)
++
++
++def test_dataset_audit_functions_reject_invalid_inputs() -> None:
++    with pytest.raises(ProvenanceError, match="BatchExecutionResult"):
++        build_dataset_audit_summary(object())  # type: ignore[arg-type]
++
++    with pytest.raises(ManifestSerializationError, match="DatasetAuditSummary"):
++        dataset_audit_to_dict(object())  # type: ignore[arg-type]
