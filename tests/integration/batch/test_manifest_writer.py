@@ -90,8 +90,14 @@ def test_write_batch_artifacts_persists_records_and_summary(
         record.source_relative_path.as_posix() for record in result.records
     ]
 
+    by_source = {record["source_relative_path"]: record for record in parsed_records}
+    assert by_source["valid.jpg"]["decode_metadata"]["source_format"] == "JPEG"
+    assert by_source["valid.jpg"]["decode_metadata"]["source_mode"] == "RGB"
+    assert by_source["corrupt.png"]["decode_metadata"] is None
+
     summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
 
+    assert summary["schema_version"] == "1.1"
     assert summary["run_id"] == result.summary.run_id
     assert summary["total_discovered"] == result.summary.total_discovered
     assert summary["successful"] == result.summary.successful

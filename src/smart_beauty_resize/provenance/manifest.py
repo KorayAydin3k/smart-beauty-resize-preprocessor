@@ -9,6 +9,7 @@ from smart_beauty_resize.batch.contracts import (
     ImageProcessingRecord,
 )
 from smart_beauty_resize.contracts import ManifestSerializationError
+from smart_beauty_resize.io.contracts import ImageDecodeMetadata
 
 
 def _datetime_to_utc_iso(value: datetime) -> str:
@@ -22,6 +23,36 @@ def _path_to_posix(value: Path | None) -> str | None:
     return value.as_posix()
 
 
+
+def _decode_metadata_to_dict(
+    metadata: ImageDecodeMetadata | None,
+) -> dict[str, object] | None:
+    if metadata is None:
+        return None
+
+    if not isinstance(metadata, ImageDecodeMetadata):
+        raise ManifestSerializationError(
+            "decode metadata must be an ImageDecodeMetadata instance"
+        )
+
+    return {
+        "alpha_present": metadata.alpha_present,
+        "bit_depth_conversion_applied": metadata.bit_depth_conversion_applied,
+        "decoded_height": metadata.decoded_height,
+        "decoded_width": metadata.decoded_width,
+        "exif_orientation": metadata.exif_orientation,
+        "exif_orientation_applied": metadata.exif_orientation_applied,
+        "icc_profile_present": metadata.icc_profile_present,
+        "rgb_conversion_applied": metadata.rgb_conversion_applied,
+        "source_bit_depth": metadata.source_bit_depth,
+        "source_channel_count": metadata.source_channel_count,
+        "source_format": metadata.source_format,
+        "source_height": metadata.source_height,
+        "source_mode": metadata.source_mode,
+        "source_width": metadata.source_width,
+    }
+
+
 def record_to_dict(
     record: ImageProcessingRecord,
 ) -> dict[str, object]:
@@ -31,6 +62,7 @@ def record_to_dict(
 
     return {
         "config_sha256": record.config_sha256,
+        "decode_metadata": _decode_metadata_to_dict(record.decode_metadata),
         "error_message": record.error_message,
         "error_type": record.error_type,
         "interpolation": record.interpolation,

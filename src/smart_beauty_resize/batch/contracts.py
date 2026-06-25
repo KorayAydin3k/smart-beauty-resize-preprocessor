@@ -11,6 +11,7 @@ from smart_beauty_resize.contracts import (
     BatchConfigurationError,
     ResizeConfig,
 )
+from smart_beauty_resize.io.contracts import ImageDecodeMetadata
 
 
 def _absolute_without_symlink_resolution(path: Path) -> Path:
@@ -222,6 +223,7 @@ class ImageProcessingRecord:
     processing_time_ms: float
     error_type: str | None
     error_message: str | None
+    decode_metadata: ImageDecodeMetadata | None = None
 
     def __post_init__(self) -> None:
         schema_version = _validate_non_empty_string(
@@ -322,6 +324,14 @@ class ImageProcessingRecord:
                 self.error_message,
             )
 
+        decode_metadata: ImageDecodeMetadata | None = None
+        if self.decode_metadata is not None:
+            if not isinstance(self.decode_metadata, ImageDecodeMetadata):
+                raise BatchConfigurationError(
+                    "decode_metadata must be an ImageDecodeMetadata instance or None"
+                )
+            decode_metadata = self.decode_metadata
+
         if self.status is ProcessingStatus.SUCCESS:
             required_success_values = (
                 output_relative_path,
@@ -409,6 +419,7 @@ class ImageProcessingRecord:
         )
         object.__setattr__(self, "error_type", error_type)
         object.__setattr__(self, "error_message", error_message)
+        object.__setattr__(self, "decode_metadata", decode_metadata)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

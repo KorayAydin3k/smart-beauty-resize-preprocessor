@@ -23,14 +23,15 @@ from smart_beauty_resize.contracts import (
     OutputExistsError,
     SmartBeautyResizeError,
 )
-from smart_beauty_resize.io.decoder import decode_image
+from smart_beauty_resize.io.contracts import ImageDecodeMetadata
+from smart_beauty_resize.io.decoder import decode_image_with_metadata
 from smart_beauty_resize.provenance.hashing import (
     sha256_file,
     sha256_resize_config,
 )
 from smart_beauty_resize.writing.safe_writer import write_png_atomic
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 def _processing_time_ms(started_ns: int) -> float:
@@ -72,6 +73,7 @@ def _process_discovered_image(
     pad_right: int | None = None
     pad_bottom: int | None = None
     interpolation: str | None = None
+    decode_metadata: ImageDecodeMetadata | None = None
 
     try:
         output_relative_path = build_output_relative_path(
@@ -82,7 +84,9 @@ def _process_discovered_image(
 
         source_sha256 = sha256_file(discovered.source_path)
 
-        image = decode_image(discovered.source_path)
+        decoded = decode_image_with_metadata(discovered.source_path)
+        image = decoded.image
+        decode_metadata = decoded.metadata
         original_height = int(image.shape[0])
         original_width = int(image.shape[1])
 
@@ -134,6 +138,7 @@ def _process_discovered_image(
             processing_time_ms=_processing_time_ms(started_ns),
             error_type=exc.__class__.__name__,
             error_message=_error_message(exc),
+            decode_metadata=decode_metadata,
         )
 
     except SmartBeautyResizeError as exc:
@@ -162,6 +167,7 @@ def _process_discovered_image(
             processing_time_ms=_processing_time_ms(started_ns),
             error_type=exc.__class__.__name__,
             error_message=_error_message(exc),
+            decode_metadata=decode_metadata,
         )
 
     return ImageProcessingRecord(
@@ -186,6 +192,7 @@ def _process_discovered_image(
         processing_time_ms=_processing_time_ms(started_ns),
         error_type=None,
         error_message=None,
+        decode_metadata=decode_metadata,
     )
 
 

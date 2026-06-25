@@ -42,7 +42,8 @@ The batch pipeline:
 - uses letterbox padding without stretching or cropping;
 - writes RGB PNG outputs;
 - records SHA-256 provenance;
-- writes `manifest.jsonl` and `run_summary.json`.
+- writes `manifest.jsonl` and `run_summary.json`;
+- records source decode metadata in each manifest item when decoding succeeds.
 
 ### Decode audit API
 
@@ -58,7 +59,9 @@ non-breaking detailed API:
 
 The metadata reports source format, mode, geometry, sample bit depth, alpha and
 ICC presence, EXIF orientation handling, and RGB/bit-depth conversion signals.
-No new image rejection policy is introduced in this phase.
+No new image rejection policy is introduced in this phase. Batch-generated
+manifest records now persist the same metadata under a nested
+`decode_metadata` object. Records that fail before decoding store `null`.
 
 ### Exit codes
 
