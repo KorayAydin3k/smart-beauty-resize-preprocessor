@@ -1,0 +1,603 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index e69de29..4e0f8b7 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -0,0 +1,53 @@
++# Changelog
++
++All notable changes to this project are documented in this file.
++
++The project follows semantic versioning. Schema versions for profiles, manifests,
++and audit artifacts evolve independently and remain explicitly recorded in each
++artifact.
++
++## [1.0.0] - 2026-06-26
++
++### Added
++
++- Deterministic aspect-ratio-preserving letterbox resize with explicit geometry plans.
++- OpenCV resize backend using area interpolation for downscaling and cubic interpolation
++  for upscaling.
++- Configurable upscale limits and deterministic RGB padding.
++- EXIF-aware Pillow decoding into contiguous RGB `uint8` arrays.
++- Non-breaking decode metadata API covering source format, mode, dimensions, bit depth,
++  channel count, alpha, ICC, EXIF orientation, and conversion signals.
++- Versioned preprocessing profiles with strict validation and compatibility for schemas
++  `1.0`, `1.1`, and `1.2`.
++- Input acceptance policies: `audit_only` and `strict_rgb8`.
++- Pre-decode source width, height, and pixel-count safety limits.
++- Deterministic recursive batch discovery with symlink exclusion.
++- Output collision preflight before hashing, decoding, resizing, or writing.
++- Atomic PNG output writing with overwrite and skip behavior.
++- SHA-256 provenance for source files, output files, and resize configuration.
++- JSONL image manifest, run summary, and dataset audit report.
++- Deterministic flat-output naming based on source-relative-path SHA-256.
++- CLI support for manual configuration and versioned profiles.
++- Structured package-specific errors and documented exit codes.
++- Golden, regression, failure-injection, stress, reproducibility, robustness, integration,
++  property, and performance tests.
++- Cross-platform reproducibility checks for Linux, macOS, and Windows.
++- Stage-level and end-to-end performance measurement harnesses without hard
++  hardware-dependent thresholds.
++
++### Stable contracts
++
++- Package version: `1.0.0`.
++- Current preprocessing profile schema: `1.2`.
++- Current manifest and run-summary schema: `1.3`.
++- Current dataset-audit schema: `1.1`.
++- Python support: `>=3.11`.
++- Output image contract: RGB PNG with deterministic letterbox geometry.
++- `config_sha256` remains intentionally scoped to resize configuration only.
++
++### Handoff
++
++- Added a production integration guide.
++- Added a release and private acceptance-test checklist.
++- Added contributor rules protecting determinism, schema compatibility, provenance,
++  and user-image privacy.
+diff --git a/CONTRIBUTING.md b/CONTRIBUTING.md
+index e69de29..3f8742f 100644
+--- a/CONTRIBUTING.md
++++ b/CONTRIBUTING.md
+@@ -0,0 +1,75 @@
++# Contributing
++
++This repository is a deterministic preprocessing component used upstream of Smart Beauty
++computer-vision models. Changes must preserve reproducibility, auditability, and user trust.
++
++## Development setup
++
++Create a branch from the latest `main` and install the locked environment:
++
++```bash
++git switch main
++git pull --ff-only origin main
++git switch -c <branch-name>
++uv sync --all-groups --locked
++```
++
++## Required validation
++
++Run the complete validation set before opening a pull request:
++
++```bash
++uv run ruff check .
++uv run mypy src
++uv run pytest
++uv build
++git diff --check
++```
++
++Performance changes must also run the relevant benchmark harness. Benchmark results are
++hardware-specific and must not be converted into hard CI thresholds without an approved,
++stable runner and an explicit product SLA.
++
++## Non-negotiable invariants
++
++- Do not stretch or crop source images unless a future versioned contract explicitly says so.
++- Preserve deterministic geometry, interpolation selection, output pixels, discovery order,
++  and serialization behavior for unchanged configurations.
++- Apply EXIF orientation before geometry-dependent processing.
++- Enforce source limits before full decode or NumPy allocation.
++- Run output-collision preflight before source hashing, decoding, resizing, or writing.
++- Keep output writes atomic.
++- Never silently change profile, manifest, run-summary, audit, or hash semantics.
++- Keep profile/manual configuration precedence explicit and tested.
++- Unexpected programming errors must propagate rather than being converted into misleading
++  image-level failures.
++
++## Schema and compatibility changes
++
++Any externally visible contract change requires all of the following:
++
++1. A schema or semantic-version decision documented in the pull request.
++2. Backward-compatibility behavior or a clearly documented breaking change.
++3. Unit and integration tests for old and new behavior.
++4. README, integration guide, and changelog updates.
++5. Confirmation that existing deterministic outputs remain unchanged when the contract is
++   not intended to alter pixels.
++
++## Test data and privacy
++
++- Never commit real users, faces, internal datasets, credentials, or customer metadata.
++- Use synthetic images or explicitly approved non-sensitive fixtures.
++- Keep local acceptance datasets, generated outputs, benchmark reports, and `dist/` artifacts
++  out of Git.
++- Do not include private filesystem paths or personal data in committed manifests or docs.
++
++## Pull request expectations
++
++A pull request should explain:
++
++- the problem and intended product impact;
++- the exact contract being added or changed;
++- what remains unchanged;
++- validation commands and results;
++- manual smoke tests for safety-critical behavior;
++- schema, compatibility, privacy, and performance implications.
+diff --git a/README.md b/README.md
+index 4122fa9..7d873eb 100644
+--- a/README.md
++++ b/README.md
+@@ -1,4 +1,16 @@
+-# smart-beauty-resize-preprocessor
++# Smart Beauty Resize Preprocessor
++
++Production-grade, deterministic image normalization for Smart Beauty computer-vision
++pipelines. Version `1.0.0` establishes a stable CLI, Python API, preprocessing
++profile contract, provenance artifacts, safety gates, and reproducibility baseline.
++
++Release documentation:
++
++- [Integration guide](docs/integration-guide.md)
++- [Release checklist](docs/release-checklist.md)
++- [Performance measurement](docs/performance-measurement.md)
++- [Changelog](CHANGELOG.md)
++- [Contributing](CONTRIBUTING.md)
+ 
+ <!-- BATCH-CLI-DOCS-START -->
+ 
+@@ -177,6 +189,20 @@ Reports are written under the ignored `benchmarks/results/` directory. Results
+ are environment-specific and are not used as hard CI thresholds. See
+ `docs/performance-measurement.md` for the measurement and interpretation rules.
+ 
++### Release and handoff
++
++The `1.0.0` release contract is documented in `docs/integration-guide.md`. Before
++tagging a release, complete `docs/release-checklist.md`, including validation on
++a private representative Smart Beauty acceptance dataset. Never commit real user
++images, generated outputs, or benchmark result files.
++
++Build distributable artifacts with:
++
++    uv build
++
++The resulting wheel and source distribution are written to the ignored `dist/`
++directory.
++
+ ### Exit codes
+ 
+ - `0`: completed without failed images;
+diff --git a/docs/integration-guide.md b/docs/integration-guide.md
+new file mode 100644
+index 0000000..f445262
+--- /dev/null
++++ b/docs/integration-guide.md
+@@ -0,0 +1,167 @@
++# Smart Beauty Resize Preprocessor 1.0 Integration Guide
++
++## Purpose
++
++The package converts heterogeneous source images into deterministic, model-ready RGB PNG
++files while preserving aspect ratio and recording enough provenance to audit every output.
++It is intended to run before acne, texture, pores, firmness, and other Smart Beauty vision
++pipelines.
++
++The preprocessor does not perform AI super-resolution, image beautification, semantic
++retouching, or model inference. It must not invent skin detail.
++
++## Supported runtime
++
++- Python `>=3.11`
++- Package version `1.0.0`
++- Supported inputs by extension: BMP, JPEG, PNG, TIFF, and WebP
++- Output format: RGB PNG
++
++## Recommended CLI integration
++
++Use the versioned default profile for production-equivalent processing:
++
++```bash
++uv run smart-beauty-resize batch \
++  --input-dir data/raw \
++  --output-dir data/resized \
++  --profile configs/default.yaml
++```
++
++Runtime controls remain available with a profile:
++
++```bash
++uv run smart-beauty-resize batch \
++  --input-dir data/raw \
++  --output-dir data/resized \
++  --profile configs/default.yaml \
++  --fail-fast
++```
++
++Use `--overwrite` only when replacing existing outputs is intentional. It does not bypass
++input-to-input output collisions. Use `--flat-output` when directory preservation is not
++required and deterministic hash-based output names are preferred.
++
++## Python batch integration
++
++```python
++from pathlib import Path
++
++from smart_beauty_resize import load_preprocessing_profile
++from smart_beauty_resize.batch import BatchConfig, process_batch
++
++profile = load_preprocessing_profile(Path("configs/default.yaml"))
++
++result = process_batch(
++    BatchConfig(
++        input_dir=Path("data/raw"),
++        output_dir=Path("data/resized"),
++        resize_config=profile.resize_config,
++        input_policy=profile.input_policy,
++        source_limits=profile.source_limits,
++        fail_fast=True,
++    )
++)
++
++if result.summary.failed:
++    raise RuntimeError("Preprocessing completed with failed images")
++```
++
++The caller owns run-level orchestration, storage lifecycle, retry policy, observability, and
++downstream model invocation.
++
++## Direct image API
++
++```python
++from pathlib import Path
++
++from smart_beauty_resize import (
++    ResizeConfig,
++    decode_image_with_metadata,
++    resize_sample,
++)
++
++source = decode_image_with_metadata(Path("data/raw/example.jpg"))
++result = resize_sample(
++    source.image,
++    ResizeConfig(target_width=512, target_height=512),
++)
++
++model_input = result.image
++geometry = result.plan
++source_metadata = source.metadata
++```
++
++Use the detailed decode API when audit metadata is required. The legacy `decode_image(...)`
++API continues to return only the RGB array.
++
++## Output and provenance contract
++
++Each successful batch run writes processed PNG files plus a run directory under
++`<output-dir>/_runs/<run-id>/` containing:
++
++- `manifest.jsonl`: one structured record per discovered source image;
++- `run_summary.json`: run-level status counts and configuration identity;
++- `dataset_audit.json`: aggregate source-format, conversion, geometry, and error statistics.
++
++Current schemas:
++
++- manifest and run summary: `1.3`;
++- dataset audit: `1.1`;
++- preprocessing profile: `1.2`.
++
++Downstream systems should:
++
++1. Reject unknown future schema versions until compatibility is reviewed.
++2. Require the expected profile identifier and profile version.
++3. Store `config_sha256`, source SHA-256, output SHA-256, and run ID with model results.
++4. Consume only records with `status == "success"`.
++5. Use padding fields and original/resized dimensions when mapping coordinates between
++   source images and model inputs.
++6. Preserve the manifest and audit files for reproducibility and incident analysis.
++
++## Error and exit-code contract
++
++CLI exit codes:
++
++- `0`: all discovered images completed without failure;
++- `1`: fatal configuration, discovery, collision, or fail-fast error;
++- `2`: the run completed, but at least one image failed.
++
++Important structured errors include:
++
++- `ProfileConfigurationError` for invalid profiles;
++- `SourceImageLimitError` for oversized sources rejected before full decode;
++- `InputPolicyViolationError` for policy-incompatible sources;
++- `OutputPathCollisionError` for multiple sources resolving to one output path;
++- `ImageDecodeError` for corrupt or unsupported image payloads.
++
++Do not interpret a skipped output as a newly validated result. When overwrite is disabled,
++an existing output can cause a skipped record.
++
++## Determinism and deployment
++
++For the same source bytes, resize configuration, supported dependency environment, and
++output mode, output pixels and provenance hashes are expected to remain stable. Deployments
++should use the committed lockfile and avoid unreviewed dependency upgrades.
++
++Build artifacts:
++
++```bash
++uv sync --all-groups --locked
++uv build
++```
++
++Install the generated wheel in the target service environment and verify:
++
++```bash
++python -c "import smart_beauty_resize; print(smart_beauty_resize.__version__)"
++smart-beauty-resize --help
++```
++
++## Privacy and data handling
++
++Real Smart Beauty acceptance images must remain in approved private storage. Do not commit
++faces, manifests containing personal paths, generated outputs, or benchmark reports. Clean
++local acceptance directories after release validation according to the team's data-retention
++policy.
+diff --git a/docs/release-checklist.md b/docs/release-checklist.md
+new file mode 100644
+index 0000000..76417d4
+--- /dev/null
++++ b/docs/release-checklist.md
+@@ -0,0 +1,145 @@
++# Release Checklist
++
++Use this checklist for the `1.0.0` release and adapt it for later semantic versions.
++
++## 1. Repository state
++
++- [ ] The release branch starts from the latest `main`.
++- [ ] The working tree is clean.
++- [ ] `pyproject.toml`, `uv.lock`, and `CHANGELOG.md` contain the same release version.
++- [ ] Profile and artifact schema versions are documented and intentional.
++- [ ] No patch files, private images, generated outputs, benchmark reports, `.venv`, or
++      `dist/` files are staged.
++
++## 2. Full validation
++
++```bash
++uv sync --all-groups --locked
++uv run ruff check .
++uv run mypy src
++uv run pytest
++uv build
++git diff --check
++```
++
++- [ ] Lint passes.
++- [ ] Type checking passes.
++- [ ] The full test suite passes.
++- [ ] Wheel and source distribution build successfully.
++- [ ] The built package reports the expected version.
++
++```bash
++uv run python -c "import smart_beauty_resize; print(smart_beauty_resize.__version__)"
++```
++
++## 3. Private Smart Beauty acceptance run
++
++Use an approved, representative, private dataset containing the formats, orientations,
++resolutions, and edge cases expected in production. Do not copy it into the repository.
++
++```bash
++rm -rf data/release-acceptance-output
++
++uv run smart-beauty-resize batch \
++  --input-dir "$SMART_BEAUTY_ACCEPTANCE_INPUT" \
++  --output-dir data/release-acceptance-output \
++  --profile configs/default.yaml \
++  --fail-fast
++```
++
++- [ ] Exit code is `0`.
++- [ ] No unexpected source-policy or decode failures occur.
++- [ ] No output collision occurs.
++- [ ] All outputs are RGB PNG files with the expected target dimensions.
++- [ ] Letterboxing preserves aspect ratio and does not crop facial regions.
++- [ ] EXIF-rotated phone images are upright.
++- [ ] Hair, clothing, and background content are not altered beyond resize and padding.
++- [ ] `manifest.jsonl`, `run_summary.json`, and `dataset_audit.json` are present.
++- [ ] Audit distributions and conversion counts are plausible for the dataset.
++- [ ] Representative outputs are visually reviewed by the product/ML owner.
++
++## 4. Determinism check
++
++Run the same private dataset into a second empty output directory with the same profile.
++Compare successful output hashes by source-relative path.
++
++```bash
++rm -rf data/release-acceptance-output-2
++
++uv run smart-beauty-resize batch \
++  --input-dir "$SMART_BEAUTY_ACCEPTANCE_INPUT" \
++  --output-dir data/release-acceptance-output-2 \
++  --profile configs/default.yaml \
++  --fail-fast
++
++uv run python - <<'PY'
++import json
++from pathlib import Path
++
++
++def latest_manifest(root: Path) -> Path:
++    run_dirs = sorted((root / "_runs").iterdir())
++    if not run_dirs:
++        raise RuntimeError(f"No run directory found under {root}")
++    return run_dirs[-1] / "manifest.jsonl"
++
++
++def output_hashes(root: Path) -> dict[str, str]:
++    records = [
++        json.loads(line)
++        for line in latest_manifest(root).read_text(encoding="utf-8").splitlines()
++        if line.strip()
++    ]
++    return {
++        record["source_relative_path"]: record["output_sha256"]
++        for record in records
++        if record["status"] == "success"
++    }
++
++first = output_hashes(Path("data/release-acceptance-output"))
++second = output_hashes(Path("data/release-acceptance-output-2"))
++
++if first != second:
++    raise SystemExit("Determinism check failed: output hash mappings differ")
++
++print(f"Determinism check passed for {len(first)} successful images")
++PY
++```
++
++- [ ] Output hash mappings are identical.
++- [ ] `config_sha256` is identical across both runs.
++
++## 5. Performance sanity check
++
++```bash
++uv run python -m benchmarks.benchmark_pipeline_stages --quick
++```
++
++- [ ] No extreme regression is visible relative to the same runner class.
++- [ ] Any material performance change is explained in the release notes.
++- [ ] No hardware-specific measurement is presented as a universal SLA.
++
++## 6. Pull request and release
++
++- [ ] The final pull request documents validation and private acceptance results without
++      exposing private data.
++- [ ] Required CI checks are green.
++- [ ] The pull request is merged into `main`.
++- [ ] Local `main` is updated with `git pull --ff-only origin main`.
++- [ ] An annotated release tag is created from the merge commit.
++
++```bash
++git tag -a v1.0.0 -m "Smart Beauty Resize Preprocessor 1.0.0"
++git push origin v1.0.0
++```
++
++- [ ] A GitHub Release is created from `v1.0.0` using the changelog as release notes.
++- [ ] Built artifacts are attached only when the team requires binary handoff.
++- [ ] PyPI or another public registry is not used without explicit authorization.
++
++## 7. Post-release
++
++- [ ] The consuming service installs the tagged wheel or pinned commit.
++- [ ] A production-equivalent smoke test passes in the consuming environment.
++- [ ] Profile ID, profile version, schema versions, and hashes are visible in observability.
++- [ ] Private local acceptance outputs are removed according to data-retention policy.
+diff --git a/pyproject.toml b/pyproject.toml
+index 9464e6b..d0b169e 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,7 +1,8 @@
+ [project]
+ name = "smart-beauty-resize-preprocessor"
+-version = "0.1.0"
+-description = "Bootstrap package for smart beauty resize preprocessing utilities"
++version = "1.0.0"
++description = "Deterministic, auditable image resize preprocessing for Smart Beauty ML pipelines"
++readme = "README.md"
+ authors = [
+     { name = "Koray_Aydin", email = "138696794+KorayAydin3k@users.noreply.github.com" }
+ ]
+@@ -15,6 +16,9 @@ dependencies = [
+     "typer>=0.26.7",
+ ]
+ 
++[project.urls]
++Repository = "https://github.com/KorayAydin3k/smart-beauty-resize-preprocessor"
++
+ [project.scripts]
+ smart-beauty-resize = "smart_beauty_resize.cli:main"
+ smart-beauty-resize-preprocessor = "smart_beauty_resize.cli:main"
+diff --git a/tests/unit/test_release_metadata.py b/tests/unit/test_release_metadata.py
+new file mode 100644
+index 0000000..6dfb4b4
+--- /dev/null
++++ b/tests/unit/test_release_metadata.py
+@@ -0,0 +1,56 @@
++from __future__ import annotations
++
++import re
++import tomllib
++from pathlib import Path
++
++REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
++SEMANTIC_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
++
++
++def _project_metadata() -> dict[str, object]:
++    payload = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
++    project = payload.get("project")
++    assert isinstance(project, dict)
++    return project
++
++
++def test_release_metadata_is_complete_and_consistent() -> None:
++    project = _project_metadata()
++    version = project.get("version")
++    description = project.get("description")
++    readme = project.get("readme")
++
++    assert isinstance(version, str)
++    assert SEMANTIC_VERSION.fullmatch(version)
++    assert isinstance(description, str)
++    assert description.strip()
++    assert "bootstrap" not in description.casefold()
++    assert readme == "README.md"
++    assert (REPOSITORY_ROOT / str(readme)).is_file()
++
++    changelog = (REPOSITORY_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
++    assert f"## [{version}]" in changelog
++
++    lockfile = (REPOSITORY_ROOT / "uv.lock").read_text(encoding="utf-8")
++    package_entry = (
++        'name = "smart-beauty-resize-preprocessor"\n'
++        f'version = "{version}"\n'
++        'source = { editable = "." }'
++    )
++    assert package_entry in lockfile
++
++
++def test_release_handoff_documents_are_present() -> None:
++    required_documents = (
++        "CHANGELOG.md",
++        "CONTRIBUTING.md",
++        "docs/integration-guide.md",
++        "docs/release-checklist.md",
++        "docs/performance-measurement.md",
++    )
++
++    for relative_path in required_documents:
++        document = REPOSITORY_ROOT / relative_path
++        assert document.is_file()
++        assert document.read_text(encoding="utf-8").strip()
+diff --git a/uv.lock b/uv.lock
+--- a/uv.lock
++++ b/uv.lock
+@@ -766,6 +766,6 @@
+ 
+ [[package]]
+ name = "smart-beauty-resize-preprocessor"
+-version = "0.1.0"
++version = "1.0.0"
+ source = { editable = "." }
+ dependencies = [
