@@ -32,7 +32,7 @@ from smart_beauty_resize.provenance.hashing import (
 )
 from smart_beauty_resize.writing.safe_writer import write_png_atomic
 
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 
 def _processing_time_ms(started_ns: int) -> float:
@@ -85,7 +85,10 @@ def _process_discovered_image(
 
         source_sha256 = sha256_file(discovered.source_path)
 
-        decoded = decode_image_with_metadata(discovered.source_path)
+        decoded = decode_image_with_metadata(
+            discovered.source_path,
+            source_limits=config.source_limits,
+        )
         image = decoded.image
         decode_metadata = decoded.metadata
         original_height = int(image.shape[0])
@@ -146,6 +149,7 @@ def _process_discovered_image(
             error_message=_error_message(exc),
             decode_metadata=decode_metadata,
             input_policy=config.input_policy,
+            source_limits=config.source_limits,
         )
 
     except SmartBeautyResizeError as exc:
@@ -176,6 +180,7 @@ def _process_discovered_image(
             error_message=_error_message(exc),
             decode_metadata=decode_metadata,
             input_policy=config.input_policy,
+            source_limits=config.source_limits,
         )
 
     return ImageProcessingRecord(
@@ -202,6 +207,7 @@ def _process_discovered_image(
         error_message=None,
         decode_metadata=decode_metadata,
         input_policy=config.input_policy,
+        source_limits=config.source_limits,
     )
 
 
@@ -248,6 +254,7 @@ def process_batch(config: BatchConfig) -> BatchExecutionResult:
         target_height=config.resize_config.target_height,
         config_sha256=config_sha256,
         input_policy=config.input_policy,
+        source_limits=config.source_limits,
     )
 
     return BatchExecutionResult(

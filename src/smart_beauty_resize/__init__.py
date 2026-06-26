@@ -23,6 +23,7 @@ from smart_beauty_resize.contracts import (
     ResizePlan,
     ResizeResult,
     SmartBeautyResizeError,
+    SourceImageLimitError,
 )
 from smart_beauty_resize.geometry import (
     apply_matrix_to_point,
@@ -33,9 +34,11 @@ from smart_beauty_resize.io import (
     DecodedImage,
     ImageDecodeMetadata,
     InputPolicy,
+    SourceImageLimits,
     decode_image,
     decode_image_with_metadata,
     enforce_input_policy,
+    enforce_source_image_limits,
 )
 
 __all__ = [
@@ -52,6 +55,7 @@ __all__ = [
     "InvalidMaskError",
     "ImageDecodeError",
     "InputPolicyViolationError",
+    "SourceImageLimitError",
     "ProfileConfigurationError",
     "round_half_up_positive",
     "calculate_letterbox_plan",
@@ -59,9 +63,11 @@ __all__ = [
     "ImageDecodeMetadata",
     "DecodedImage",
     "InputPolicy",
+    "SourceImageLimits",
     "decode_image",
     "decode_image_with_metadata",
     "enforce_input_policy",
+    "enforce_source_image_limits",
     "resize_sample",
     "profile_from_mapping",
     "load_preprocessing_profile",

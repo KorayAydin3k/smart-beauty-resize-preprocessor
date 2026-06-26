@@ -11,6 +11,8 @@ from smart_beauty_resize import (
     InputPolicy,
     InputPolicyViolationError,
     ResizeConfig,
+    SourceImageLimitError,
+    SourceImageLimits,
     decode_image,
 )
 from smart_beauty_resize.batch import (
@@ -50,6 +52,7 @@ def _config(
     fail_fast: bool = False,
     preserve_directory_structure: bool = True,
     input_policy: InputPolicy = InputPolicy.AUDIT_ONLY,
+    source_limits: SourceImageLimits | None = None,
 ) -> BatchConfig:
     return BatchConfig(
         input_dir=input_dir,
@@ -64,6 +67,7 @@ def _config(
         fail_fast=fail_fast,
         preserve_directory_structure=(preserve_directory_structure),
         input_policy=input_policy,
+        source_limits=SourceImageLimits() if source_limits is None else source_limits,
     )
 
 
@@ -91,7 +95,7 @@ def test_process_batch_records_success_and_failure(
 
     result = process_batch(_config(input_dir, output_dir))
 
-    assert result.summary.schema_version == "1.2"
+    assert result.summary.schema_version == "1.3"
     assert result.summary.total_discovered == 3
     assert result.summary.successful == 2
     assert result.summary.failed == 1
@@ -115,7 +119,7 @@ def test_process_batch_records_success_and_failure(
         assert record.output_relative_path is not None
         assert record.source_sha256 is not None
         assert record.output_sha256 is not None
-        assert record.schema_version == "1.2"
+        assert record.schema_version == "1.3"
         assert record.decode_metadata is not None
         assert record.decode_metadata.source_format in {"JPEG", "PNG"}
         assert record.decode_metadata.source_mode == "RGB"
@@ -131,6 +135,70 @@ def test_process_batch_records_success_and_failure(
 
     assert result.summary.config_sha256 == expected_config_hash
     assert all(record.config_sha256 == expected_config_hash for record in result.records)
+    assert result.summary.source_limits == SourceImageLimits()
+    assert all(record.source_limits == SourceImageLimits() for record in result.records)
+
+
+def test_source_limit_violation_becomes_failed_record_before_decode(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+
+    _write_rgb_image(
+        input_dir / "oversized.png",
+        width=20,
+        height=10,
+        value=60,
+    )
+
+    limits = SourceImageLimits(
+        max_width=19,
+        max_height=100,
+        max_pixels=1000,
+    )
+    result = process_batch(
+        _config(
+            input_dir,
+            output_dir,
+            source_limits=limits,
+        )
+    )
+
+    assert result.summary.successful == 0
+    assert result.summary.failed == 1
+    assert result.summary.source_limits == limits
+
+    record = result.records[0]
+    assert record.status is ProcessingStatus.FAILED
+    assert record.error_type == "SourceImageLimitError"
+    assert record.decode_metadata is None
+    assert record.source_limits == limits
+    assert not (output_dir / "oversized.png").exists()
+
+
+def test_fail_fast_propagates_source_limit_error(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+
+    _write_rgb_image(
+        input_dir / "oversized.png",
+        width=20,
+        height=10,
+        value=60,
+    )
+
+    with pytest.raises(SourceImageLimitError):
+        process_batch(
+            _config(
+                input_dir,
+                output_dir,
+                fail_fast=True,
+                source_limits=SourceImageLimits(max_width=19),
+            )
+        )
 
 
 def test_second_run_skips_existing_outputs(

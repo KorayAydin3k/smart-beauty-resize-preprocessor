@@ -39,6 +39,10 @@ class ImageDecodeError(SmartBeautyResizeError):
     """Raised when an image file cannot be decoded into a valid RGB array."""
 
 
+class SourceImageLimitError(ImageDecodeError):
+    """Raised before full decode when source dimensions exceed configured limits."""
+
+
 class InputPolicyViolationError(ImageDecodeError):
     """Raised when a decoded source violates the configured input policy."""
 

@@ -15,9 +15,9 @@ from smart_beauty_resize.contracts import (
     ManifestSerializationError,
     ProvenanceError,
 )
-from smart_beauty_resize.io.contracts import InputPolicy
+from smart_beauty_resize.io.contracts import InputPolicy, SourceImageLimits
 
-DATASET_AUDIT_SCHEMA_VERSION: Final = "1.0"
+DATASET_AUDIT_SCHEMA_VERSION: Final = "1.1"
 _UNKNOWN_VALUE: Final = "unknown"
 
 
@@ -83,6 +83,7 @@ class DatasetAuditSummary:
     run_id: str
     config_sha256: str
     input_policy: InputPolicy
+    source_limits: SourceImageLimits
     total_records: int
     records_with_decode_metadata: int
     records_without_decode_metadata: int
@@ -118,6 +119,10 @@ class DatasetAuditSummary:
             raise ProvenanceError("dataset audit config_sha256 must be lowercase SHA-256 hex")
         if not isinstance(self.input_policy, InputPolicy):
             raise ProvenanceError("dataset audit input_policy must be an InputPolicy")
+        if not isinstance(self.source_limits, SourceImageLimits):
+            raise ProvenanceError(
+                "dataset audit source_limits must be a SourceImageLimits instance"
+            )
 
         for field_name in (
             "total_records",
@@ -328,6 +333,7 @@ def build_dataset_audit_summary(
         run_id=result.summary.run_id,
         config_sha256=result.summary.config_sha256,
         input_policy=result.summary.input_policy,
+        source_limits=result.summary.source_limits,
         total_records=len(records),
         records_with_decode_metadata=len(metadata_values),
         records_without_decode_metadata=len(records) - len(metadata_values),
@@ -379,6 +385,16 @@ def _statistics_to_dict(
     }
 
 
+def _source_limits_to_dict(
+    limits: SourceImageLimits,
+) -> dict[str, int | None]:
+    return {
+        "max_height": limits.max_height,
+        "max_pixels": limits.max_pixels,
+        "max_width": limits.max_width,
+    }
+
+
 def dataset_audit_to_dict(
     summary: DatasetAuditSummary,
 ) -> dict[str, object]:
@@ -401,6 +417,7 @@ def dataset_audit_to_dict(
         "rgb_conversion_applied_count": summary.rgb_conversion_applied_count,
         "run_id": summary.run_id,
         "schema_version": summary.schema_version,
+        "source_limits": _source_limits_to_dict(summary.source_limits),
         "source_bit_depth_counts": _counts_to_dict(summary.source_bit_depth_counts),
         "source_channel_count_counts": _counts_to_dict(
             summary.source_channel_count_counts

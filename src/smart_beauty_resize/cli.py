@@ -21,7 +21,7 @@ from smart_beauty_resize.contracts import (
     ResizeConfigurationError,
     SmartBeautyResizeError,
 )
-from smart_beauty_resize.io.contracts import InputPolicy
+from smart_beauty_resize.io.contracts import InputPolicy, SourceImageLimits
 from smart_beauty_resize.provenance import (
     BatchArtifactPaths,
     write_batch_artifacts,
@@ -46,6 +46,7 @@ error_console = Console(stderr=True)
 class _ResolvedPreprocessingSettings:
     resize_config: ResizeConfig
     input_policy: InputPolicy
+    source_limits: SourceImageLimits
 
 
 def _resolve_preprocessing_settings(
@@ -59,6 +60,9 @@ def _resolve_preprocessing_settings(
     padding_green: int | None,
     padding_blue: int | None,
     input_policy: InputPolicy | None,
+    max_source_width: int | None,
+    max_source_height: int | None,
+    max_source_pixels: int | None,
 ) -> _ResolvedPreprocessingSettings:
     """Resolve one unambiguous preprocessing configuration source.
 
@@ -75,6 +79,9 @@ def _resolve_preprocessing_settings(
         "--padding-green": padding_green,
         "--padding-blue": padding_blue,
         "--input-policy": input_policy,
+        "--max-source-width": max_source_width,
+        "--max-source-height": max_source_height,
+        "--max-source-pixels": max_source_pixels,
     }
 
     if profile is not None:
@@ -91,6 +98,7 @@ def _resolve_preprocessing_settings(
         return _ResolvedPreprocessingSettings(
             resize_config=loaded_profile.resize_config,
             input_policy=loaded_profile.input_policy,
+            source_limits=loaded_profile.source_limits,
         )
 
     if target_width is None or target_height is None:
@@ -111,6 +119,11 @@ def _resolve_preprocessing_settings(
             ),
         ),
         input_policy=(InputPolicy.AUDIT_ONLY if input_policy is None else input_policy),
+        source_limits=SourceImageLimits(
+            max_width=max_source_width,
+            max_height=max_source_height,
+            max_pixels=max_source_pixels,
+        ),
     )
 
 
@@ -211,7 +224,7 @@ def batch_command(
             "--profile",
             help=(
                 "Versioned YAML preprocessing profile. Cannot be combined "
-                "with manual resize options."
+                "with manual preprocessing options."
             ),
         ),
     ] = None,
@@ -283,6 +296,39 @@ def batch_command(
             ),
         ),
     ] = None,
+    max_source_width: Annotated[
+        int | None,
+        typer.Option(
+            "--max-source-width",
+            min=1,
+            help=(
+                "Maximum source width accepted before full decode in manual mode. "
+                "Omit to disable the width limit."
+            ),
+        ),
+    ] = None,
+    max_source_height: Annotated[
+        int | None,
+        typer.Option(
+            "--max-source-height",
+            min=1,
+            help=(
+                "Maximum source height accepted before full decode in manual mode. "
+                "Omit to disable the height limit."
+            ),
+        ),
+    ] = None,
+    max_source_pixels: Annotated[
+        int | None,
+        typer.Option(
+            "--max-source-pixels",
+            min=1,
+            help=(
+                "Maximum source pixel count accepted before full decode in manual mode. "
+                "Omit to disable the pixel-count limit."
+            ),
+        ),
+    ] = None,
     overwrite: Annotated[
         bool,
         typer.Option(
@@ -325,6 +371,9 @@ def batch_command(
             padding_green=padding_green,
             padding_blue=padding_blue,
             input_policy=input_policy,
+            max_source_width=max_source_width,
+            max_source_height=max_source_height,
+            max_source_pixels=max_source_pixels,
         )
 
         batch_config = BatchConfig(
@@ -336,6 +385,7 @@ def batch_command(
             fail_fast=fail_fast,
             preserve_directory_structure=(preserve_directory_structure),
             input_policy=settings.input_policy,
+            source_limits=settings.source_limits,
         )
 
         result = process_batch(batch_config)

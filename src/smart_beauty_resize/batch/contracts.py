@@ -11,7 +11,11 @@ from smart_beauty_resize.contracts import (
     BatchConfigurationError,
     ResizeConfig,
 )
-from smart_beauty_resize.io.contracts import ImageDecodeMetadata, InputPolicy
+from smart_beauty_resize.io.contracts import (
+    ImageDecodeMetadata,
+    InputPolicy,
+    SourceImageLimits,
+)
 
 
 def _absolute_without_symlink_resolution(path: Path) -> Path:
@@ -154,6 +158,7 @@ class BatchConfig:
     fail_fast: bool = False
     preserve_directory_structure: bool = True
     input_policy: InputPolicy = InputPolicy.AUDIT_ONLY
+    source_limits: SourceImageLimits = SourceImageLimits()
 
     def __post_init__(self) -> None:
         if not isinstance(self.input_dir, Path):
@@ -167,6 +172,10 @@ class BatchConfig:
 
         if not isinstance(self.input_policy, InputPolicy):
             raise BatchConfigurationError("input_policy must be an InputPolicy instance")
+        if not isinstance(self.source_limits, SourceImageLimits):
+            raise BatchConfigurationError(
+                "source_limits must be a SourceImageLimits instance"
+            )
 
         if type(self.output_format) is not str:
             raise BatchConfigurationError("output_format must be a string")
@@ -229,6 +238,7 @@ class ImageProcessingRecord:
     error_message: str | None
     decode_metadata: ImageDecodeMetadata | None = None
     input_policy: InputPolicy = InputPolicy.AUDIT_ONLY
+    source_limits: SourceImageLimits = SourceImageLimits()
 
     def __post_init__(self) -> None:
         schema_version = _validate_non_empty_string(
@@ -252,6 +262,10 @@ class ImageProcessingRecord:
 
         if not isinstance(self.input_policy, InputPolicy):
             raise BatchConfigurationError("input_policy must be an InputPolicy instance")
+        if not isinstance(self.source_limits, SourceImageLimits):
+            raise BatchConfigurationError(
+                "source_limits must be a SourceImageLimits instance"
+            )
 
         source_sha256 = _validate_optional_sha256(
             "source_sha256",
@@ -446,6 +460,7 @@ class BatchRunSummary:
     target_height: int
     config_sha256: str
     input_policy: InputPolicy = InputPolicy.AUDIT_ONLY
+    source_limits: SourceImageLimits = SourceImageLimits()
 
     def __post_init__(self) -> None:
         schema_version = _validate_non_empty_string(
@@ -498,6 +513,10 @@ class BatchRunSummary:
 
         if not isinstance(self.input_policy, InputPolicy):
             raise BatchConfigurationError("input_policy must be an InputPolicy instance")
+        if not isinstance(self.source_limits, SourceImageLimits):
+            raise BatchConfigurationError(
+                "source_limits must be a SourceImageLimits instance"
+            )
 
         if successful + failed + skipped != total_discovered:
             raise BatchConfigurationError(
@@ -581,3 +600,9 @@ class BatchExecutionResult:
 
             if record.target_height != self.summary.target_height:
                 raise BatchConfigurationError("all records must use the summary target_height")
+
+            if record.input_policy is not self.summary.input_policy:
+                raise BatchConfigurationError("all records must use the summary input_policy")
+
+            if record.source_limits != self.summary.source_limits:
+                raise BatchConfigurationError("all records must use the summary source_limits")

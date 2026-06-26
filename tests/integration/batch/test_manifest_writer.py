@@ -97,24 +97,39 @@ def test_write_batch_artifacts_persists_records_and_summary(
     assert by_source["valid.jpg"]["decode_metadata"]["source_format"] == "JPEG"
     assert by_source["valid.jpg"]["decode_metadata"]["source_mode"] == "RGB"
     assert by_source["valid.jpg"]["input_policy"] == "audit_only"
+    assert by_source["valid.jpg"]["source_limits"] == {
+        "max_height": None,
+        "max_pixels": None,
+        "max_width": None,
+    }
     assert by_source["corrupt.png"]["decode_metadata"] is None
 
     summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
 
-    assert summary["schema_version"] == "1.2"
+    assert summary["schema_version"] == "1.3"
     assert summary["run_id"] == result.summary.run_id
     assert summary["input_policy"] == "audit_only"
     assert summary["total_discovered"] == result.summary.total_discovered
     assert summary["successful"] == result.summary.successful
     assert summary["failed"] == result.summary.failed
     assert summary["skipped"] == result.summary.skipped
+    assert summary["source_limits"] == {
+        "max_height": None,
+        "max_pixels": None,
+        "max_width": None,
+    }
 
     audit = json.loads(artifacts.dataset_audit_path.read_text(encoding="utf-8"))
 
-    assert audit["schema_version"] == "1.0"
+    assert audit["schema_version"] == "1.1"
     assert audit["run_id"] == result.summary.run_id
     assert audit["config_sha256"] == result.summary.config_sha256
     assert audit["input_policy"] == "audit_only"
+    assert audit["source_limits"] == {
+        "max_height": None,
+        "max_pixels": None,
+        "max_width": None,
+    }
     assert audit["total_records"] == 2
     assert audit["records_with_decode_metadata"] == 1
     assert audit["records_without_decode_metadata"] == 1

@@ -7,7 +7,12 @@ import numpy as np
 from PIL import Image, ImageMode, ImageOps, UnidentifiedImageError
 
 from smart_beauty_resize.contracts import ImageDecodeError
-from smart_beauty_resize.io.contracts import DecodedImage, ImageDecodeMetadata
+from smart_beauty_resize.io.contracts import (
+    DecodedImage,
+    ImageDecodeMetadata,
+    SourceImageLimits,
+)
+from smart_beauty_resize.io.limits import enforce_source_image_limits
 
 _EXIF_ORIENTATION_TAG = 274
 _TRANSFORMING_EXIF_ORIENTATIONS = frozenset({2, 3, 4, 5, 6, 7, 8})
@@ -46,12 +51,20 @@ def _read_exif_orientation(image: Image.Image) -> int | None:
     return None
 
 
-def _decode_canonical_rgb(path: Path) -> DecodedImage:
+def _decode_canonical_rgb(
+    path: Path,
+    source_limits: SourceImageLimits,
+) -> DecodedImage:
     try:
         with Image.open(path) as image_file:
             source_format = (image_file.format or "UNKNOWN").upper()
             source_mode = image_file.mode
             source_width, source_height = image_file.size
+            enforce_source_image_limits(
+                width=source_width,
+                height=source_height,
+                limits=source_limits,
+            )
             source_channel_count = len(image_file.getbands())
             source_bit_depth = _source_bit_depth(image_file)
             alpha_present = (
@@ -96,13 +109,21 @@ def _decode_canonical_rgb(path: Path) -> DecodedImage:
     return DecodedImage(image=decoded, metadata=metadata)
 
 
-def decode_image_with_metadata(path: str | Path) -> DecodedImage:
+def decode_image_with_metadata(
+    path: str | Path,
+    *,
+    source_limits: SourceImageLimits | None = None,
+) -> DecodedImage:
     """Decode an image into canonical RGB pixels plus source audit metadata."""
     file_path = Path(path)
     if not file_path.is_file():
         raise ImageDecodeError(f"image file does not exist: {file_path}")
 
-    return _decode_canonical_rgb(file_path)
+    resolved_limits = SourceImageLimits() if source_limits is None else source_limits
+    if not isinstance(resolved_limits, SourceImageLimits):
+        raise ImageDecodeError("source_limits must be a SourceImageLimits instance or None")
+
+    return _decode_canonical_rgb(file_path, resolved_limits)
 
 
 def decode_image(path: str | Path) -> np.ndarray:
