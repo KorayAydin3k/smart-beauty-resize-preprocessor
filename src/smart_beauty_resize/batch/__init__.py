@@ -13,6 +13,7 @@ from smart_beauty_resize.batch.discovery import (
     build_output_relative_path,
     discover_images,
     is_supported_image_path,
+    validate_unique_output_paths,
 )
 from smart_beauty_resize.batch.processor import (
     SCHEMA_VERSION,
@@ -31,5 +32,6 @@ __all__ = [
     "build_output_relative_path",
     "discover_images",
     "is_supported_image_path",
+    "validate_unique_output_paths",
     "process_batch",
 ]

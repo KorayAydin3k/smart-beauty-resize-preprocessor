@@ -6,6 +6,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from smart_beauty_resize.batch import (
@@ -396,7 +397,9 @@ def batch_command(
         )
 
     except SmartBeautyResizeError as exc:
-        error_console.print(f"[bold red]Error:[/bold red] {exc.__class__.__name__}: {exc}")
+        error_console.print(
+            f"[bold red]Error:[/bold red] {exc.__class__.__name__}: {escape(str(exc))}"
+        )
         raise typer.Exit(code=1) from exc
 
     for record in result.records:

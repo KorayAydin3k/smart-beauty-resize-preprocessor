@@ -5,7 +5,10 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from smart_beauty_resize.contracts import DiscoveryError
+from smart_beauty_resize.contracts import (
+    DiscoveryError,
+    OutputPathCollisionError,
+)
 
 SUPPORTED_IMAGE_EXTENSIONS = frozenset(
     {
@@ -175,3 +178,63 @@ def build_output_relative_path(
     digest = hashlib.sha256(source_relative_path.as_posix().encode("utf-8")).hexdigest()
 
     return Path(f"{digest}.png")
+
+
+def validate_unique_output_paths(
+    discovered_images: tuple[DiscoveredImage, ...],
+    *,
+    preserve_directory_structure: bool,
+    output_format: str = "png",
+) -> None:
+    """Reject source sets that would write more than one image to one output path.
+
+    Output paths are compared case-insensitively so the same input set behaves
+    consistently on case-sensitive and case-insensitive filesystems. The check
+    is deterministic and must run before source hashing, decoding, or writing.
+    """
+    if not isinstance(discovered_images, tuple):
+        raise DiscoveryError("discovered_images must be a tuple")
+
+    outputs_by_key: dict[str, list[tuple[Path, Path]]] = {}
+
+    for discovered in discovered_images:
+        if not isinstance(discovered, DiscoveredImage):
+            raise DiscoveryError("discovered_images entries must be DiscoveredImage instances")
+
+        output_relative_path = build_output_relative_path(
+            discovered.relative_path,
+            preserve_directory_structure=preserve_directory_structure,
+            output_format=output_format,
+        )
+        key = output_relative_path.as_posix().casefold()
+        outputs_by_key.setdefault(key, []).append((output_relative_path, discovered.relative_path))
+
+    collisions = [entries for entries in outputs_by_key.values() if len(entries) > 1]
+
+    if not collisions:
+        return
+
+    collisions.sort(
+        key=lambda entries: (
+            min(path.as_posix() for path, _ in entries).casefold(),
+            min(path.as_posix() for path, _ in entries),
+        )
+    )
+
+    detail_lines: list[str] = []
+    for entries in collisions:
+        output_relative_path = min(
+            (path for path, _ in entries),
+            key=lambda path: (path.as_posix().casefold(), path.as_posix()),
+        )
+        source_paths = sorted(
+            (source for _, source in entries),
+            key=lambda path: (path.as_posix().casefold(), path.as_posix()),
+        )
+        sources = ", ".join(path.as_posix() for path in source_paths)
+        detail_lines.append(f"- {output_relative_path.as_posix()} <- [{sources}]")
+
+    details = "\n".join(detail_lines)
+    raise OutputPathCollisionError(
+        "multiple source images resolve to the same output path:\n" + details
+    )

@@ -973,3 +973,46 @@ def test_previous_profile_schema_defaults_to_unlimited_source_dimensions(
         "max_pixels": None,
         "max_width": None,
     }
+
+
+def test_output_collision_exits_one_without_outputs_or_run_artifacts(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+
+    _write_image(input_dir / "sample.jpg", value=40)
+    _write_image(input_dir / "sample.png", value=120)
+
+    result = runner.invoke(
+        app,
+        _batch_arguments(input_dir, output_dir),
+    )
+
+    output = _strip_ansi(result.output)
+
+    assert result.exit_code == 1
+    assert "OutputPathCollisionError" in output
+    assert "sample.png <- [sample.jpg, sample.png]" in output
+    assert not output_dir.exists()
+
+
+def test_overwrite_does_not_bypass_output_collision_preflight(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+
+    _write_image(input_dir / "sample.jpeg", value=40)
+    _write_image(input_dir / "sample.tiff", value=120)
+
+    result = runner.invoke(
+        app,
+        [*_batch_arguments(input_dir, output_dir), "--overwrite"],
+    )
+
+    output = _strip_ansi(result.output)
+
+    assert result.exit_code == 1
+    assert "OutputPathCollisionError" in output
+    assert not output_dir.exists()

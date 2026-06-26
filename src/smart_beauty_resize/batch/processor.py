@@ -17,6 +17,7 @@ from smart_beauty_resize.batch.discovery import (
     DiscoveredImage,
     build_output_relative_path,
     discover_images,
+    validate_unique_output_paths,
 )
 from smart_beauty_resize.contracts import (
     BatchConfigurationError,
@@ -225,6 +226,11 @@ def process_batch(config: BatchConfig) -> BatchExecutionResult:
     config_sha256 = sha256_resize_config(config.resize_config)
 
     discovered_images = discover_images(config.input_dir)
+    validate_unique_output_paths(
+        discovered_images,
+        preserve_directory_structure=config.preserve_directory_structure,
+        output_format=config.output_format,
+    )
 
     records = tuple(
         _process_discovered_image(
