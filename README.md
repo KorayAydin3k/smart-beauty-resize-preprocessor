@@ -43,7 +43,7 @@ The batch pipeline:
 - uses letterbox padding without stretching or cropping;
 - writes RGB PNG outputs;
 - records SHA-256 provenance;
-- writes `manifest.jsonl` and `run_summary.json`;
+- writes `manifest.jsonl`, `run_summary.json`, and `dataset_audit.json`;
 - records source decode metadata in each manifest item when decoding succeeds.
 
 ### Decode audit API
@@ -94,6 +94,32 @@ Profile schema `1.1` stores the policy explicitly:
 Legacy schema `1.0` profiles remain supported and resolve to `audit_only`.
 `--input-policy` is a manual-mode option and cannot override a profile. The
 resize-only `config_sha256` semantics remain unchanged.
+
+### Dataset audit summary
+
+Every completed run now writes `dataset_audit.json` beside the manifest and run
+summary. The independent audit schema starts at `1.0` and links back to the run
+through `run_id`, `config_sha256`, and `input_policy`.
+
+The audit aggregates only observed manifest data. It includes:
+
+- processing status and error-type counts;
+- decode-metadata coverage;
+- source format, mode, bit-depth, and channel-count distributions;
+- alpha, ICC, EXIF, RGB-conversion, and bit-depth-conversion counts;
+- source width, height, and pixel-count statistics using deterministic nearest-rank
+  `p50`, `p95`, and `p99` values.
+
+Records that fail before decoding remain visible through
+`records_without_decode_metadata` and the error distribution. No source pixels,
+resize geometry, interpolation, manifest schema, or `config_sha256` semantics are
+changed by this report.
+
+Programmatic aggregation is also available:
+
+    from smart_beauty_resize.audit import build_dataset_audit_summary
+
+    audit = build_dataset_audit_summary(batch_result)
 
 ### Exit codes
 

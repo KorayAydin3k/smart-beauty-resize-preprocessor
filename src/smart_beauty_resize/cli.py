@@ -179,6 +179,7 @@ def _print_artifact_paths(
     console.print(f"[bold]Run directory:[/bold] {artifacts.run_directory}")
     console.print(f"[bold]Manifest:[/bold] {artifacts.manifest_path}")
     console.print(f"[bold]Summary:[/bold] {artifacts.summary_path}")
+    console.print(f"[bold]Dataset audit:[/bold] {artifacts.dataset_audit_path}")
 
 
 @app.callback()

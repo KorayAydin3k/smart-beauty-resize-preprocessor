@@ -12,6 +12,7 @@ from smart_beauty_resize.batch.contracts import BatchExecutionResult
 from smart_beauty_resize.contracts import (
     ManifestSerializationError,
     ManifestWriteError,
+    ProvenanceError,
 )
 from smart_beauty_resize.provenance.manifest import (
     record_to_json_line,
@@ -21,6 +22,7 @@ from smart_beauty_resize.provenance.manifest import (
 RUNS_DIRECTORY_NAME = "_runs"
 MANIFEST_FILENAME = "manifest.jsonl"
 SUMMARY_FILENAME = "run_summary.json"
+DATASET_AUDIT_FILENAME = "dataset_audit.json"
 
 _RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
@@ -32,6 +34,7 @@ class BatchArtifactPaths:
     run_directory: Path
     manifest_path: Path
     summary_path: Path
+    dataset_audit_path: Path
 
 
 def _absolute_without_symlink_resolution(path: Path) -> Path:
@@ -152,6 +155,33 @@ def _write_summary_file(
         raise ManifestWriteError(f"unable to write summary file: {path}") from exc
 
 
+
+def _write_dataset_audit_file(
+    path: Path,
+    result: BatchExecutionResult,
+) -> None:
+    from smart_beauty_resize.audit import (
+        build_dataset_audit_summary,
+        dataset_audit_to_json,
+    )
+
+    try:
+        content = dataset_audit_to_json(build_dataset_audit_summary(result)) + "\n"
+
+        with path.open(
+            "x",
+            encoding="utf-8",
+            newline="\n",
+        ) as file_handle:
+            file_handle.write(content)
+            file_handle.flush()
+            os.fsync(file_handle.fileno())
+
+    except ManifestSerializationError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise ManifestWriteError(f"unable to write dataset audit file: {path}") from exc
+
 def write_batch_artifacts(
     result: BatchExecutionResult,
     output_root: Path,
@@ -203,6 +233,7 @@ def write_batch_artifacts(
 
         manifest_path = staging_directory / MANIFEST_FILENAME
         summary_path = staging_directory / SUMMARY_FILENAME
+        dataset_audit_path = staging_directory / DATASET_AUDIT_FILENAME
 
         _write_manifest_file(
             manifest_path,
@@ -210,6 +241,10 @@ def write_batch_artifacts(
         )
         _write_summary_file(
             summary_path,
+            result,
+        )
+        _write_dataset_audit_file(
+            dataset_audit_path,
             result,
         )
 
@@ -221,6 +256,12 @@ def write_batch_artifacts(
 
         if summary_path.stat().st_size <= 0:
             raise ManifestWriteError("staged summary file is empty")
+
+        if not dataset_audit_path.is_file():
+            raise ManifestWriteError("staged dataset audit file does not exist")
+
+        if dataset_audit_path.stat().st_size <= 0:
+            raise ManifestWriteError("staged dataset audit file is empty")
 
         try:
             os.rename(
@@ -235,6 +276,7 @@ def write_batch_artifacts(
     except (
         ManifestSerializationError,
         ManifestWriteError,
+        ProvenanceError,
     ):
         if staging_directory is not None:
             shutil.rmtree(
@@ -258,12 +300,18 @@ def write_batch_artifacts(
 
     final_manifest_path = final_run_directory / MANIFEST_FILENAME
     final_summary_path = final_run_directory / SUMMARY_FILENAME
+    final_dataset_audit_path = final_run_directory / DATASET_AUDIT_FILENAME
 
-    if not final_manifest_path.is_file() or not final_summary_path.is_file():
+    if (
+        not final_manifest_path.is_file()
+        or not final_summary_path.is_file()
+        or not final_dataset_audit_path.is_file()
+    ):
         raise ManifestWriteError("published manifest bundle is incomplete")
 
     return BatchArtifactPaths(
         run_directory=final_run_directory,
         manifest_path=final_manifest_path,
         summary_path=final_summary_path,
+        dataset_audit_path=final_dataset_audit_path,
     )

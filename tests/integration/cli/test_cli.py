@@ -115,6 +115,7 @@ def test_successful_batch_command(
     assert result.exit_code == 0, result.output
     assert "Successful" in result.output
     assert "Manifest" in result.output
+    assert "Dataset audit" in result.output
 
     assert (output_dir / "sample.png").is_file()
 
@@ -123,6 +124,7 @@ def test_successful_batch_command(
     assert len(run_directories) == 1
     assert (run_directories[0] / "manifest.jsonl").is_file()
     assert (run_directories[0] / "run_summary.json").is_file()
+    assert (run_directories[0] / "dataset_audit.json").is_file()
 
     summary = json.loads((run_directories[0] / "run_summary.json").read_text(encoding="utf-8"))
 
@@ -131,6 +133,14 @@ def test_successful_batch_command(
     assert summary["failed"] == 0
     assert summary["skipped"] == 0
     assert summary["input_policy"] == "audit_only"
+
+    audit = json.loads(
+        (run_directories[0] / "dataset_audit.json").read_text(encoding="utf-8")
+    )
+    assert audit["total_records"] == 1
+    assert audit["records_with_decode_metadata"] == 1
+    assert audit["records_without_decode_metadata"] == 0
+    assert audit["source_format_counts"] == {"JPEG": 1}
 
 
 def test_corrupt_image_exits_two_and_writes_manifest(
@@ -177,6 +187,14 @@ def test_corrupt_image_exits_two_and_writes_manifest(
     assert summary["successful"] == 1
     assert summary["failed"] == 1
     assert summary["skipped"] == 0
+
+    audit = json.loads(
+        (run_directories[0] / "dataset_audit.json").read_text(encoding="utf-8")
+    )
+    assert audit["total_records"] == 2
+    assert audit["records_with_decode_metadata"] == 1
+    assert audit["records_without_decode_metadata"] == 1
+    assert audit["error_type_counts"] == {"ImageDecodeError": 1}
 
 
 def test_second_run_skips_existing_output(

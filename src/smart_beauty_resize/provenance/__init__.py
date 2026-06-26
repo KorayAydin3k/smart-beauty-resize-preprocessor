@@ -13,6 +13,7 @@ from smart_beauty_resize.provenance.manifest import (
     summary_to_json,
 )
 from smart_beauty_resize.provenance.writer import (
+    DATASET_AUDIT_FILENAME,
     MANIFEST_FILENAME,
     RUNS_DIRECTORY_NAME,
     SUMMARY_FILENAME,
@@ -21,6 +22,7 @@ from smart_beauty_resize.provenance.writer import (
 )
 
 __all__ = [
+    "DATASET_AUDIT_FILENAME",
     "MANIFEST_FILENAME",
     "RUNS_DIRECTORY_NAME",
     "SUMMARY_FILENAME",
