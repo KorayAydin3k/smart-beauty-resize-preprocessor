@@ -1,0 +1,463 @@
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import shutil
+import sys
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from statistics import mean
+from tempfile import TemporaryDirectory
+from typing import Any
+
+import cv2
+import numpy as np
+import PIL
+from PIL import Image
+
+from smart_beauty_resize.backends.opencv_backend import resize_sample
+from smart_beauty_resize.batch import (
+    build_output_relative_path,
+    discover_images,
+    validate_unique_output_paths,
+)
+from smart_beauty_resize.contracts import ResizeConfig
+from smart_beauty_resize.io import (
+    InputPolicy,
+    SourceImageLimits,
+    decode_image_with_metadata,
+    enforce_input_policy,
+)
+from smart_beauty_resize.provenance import sha256_file, sha256_resize_config
+from smart_beauty_resize.writing.safe_writer import write_png_atomic
+
+STAGE_NAMES: tuple[str, ...] = (
+    "discovery_and_preflight",
+    "output_path_planning",
+    "source_hash",
+    "decode_and_normalize",
+    "input_policy",
+    "resize_and_pad",
+    "png_encode_and_write",
+    "output_hash",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineStageBenchmarkCase:
+    """One deterministic benchmark scenario for production pipeline stages."""
+
+    name: str
+    image_count: int
+    source_width: int
+    source_height: int
+    target_width: int
+    target_height: int
+    seed: int
+    warmup_iterations: int
+    measured_iterations: int
+
+
+CASES: tuple[PipelineStageBenchmarkCase, ...] = (
+    PipelineStageBenchmarkCase(
+        name="small_pipeline",
+        image_count=16,
+        source_width=320,
+        source_height=240,
+        target_width=512,
+        target_height=512,
+        seed=101,
+        warmup_iterations=1,
+        measured_iterations=3,
+    ),
+    PipelineStageBenchmarkCase(
+        name="medium_pipeline",
+        image_count=6,
+        source_width=1920,
+        source_height=1080,
+        target_width=512,
+        target_height=512,
+        seed=211,
+        warmup_iterations=1,
+        measured_iterations=3,
+    ),
+    PipelineStageBenchmarkCase(
+        name="large_pipeline",
+        image_count=2,
+        source_width=4032,
+        source_height=3024,
+        target_width=1024,
+        target_height=1024,
+        seed=307,
+        warmup_iterations=1,
+        measured_iterations=2,
+    ),
+)
+
+
+def _pattern(*, width: int, height: int, seed: int) -> np.ndarray:
+    """Create a deterministic non-uniform RGB image."""
+    y_coordinates, x_coordinates = np.indices((height, width), dtype=np.int32)
+    red = (x_coordinates * 37 + y_coordinates * 11 + seed) % 256
+    green = (x_coordinates * 17 + y_coordinates * 43 + seed * 3) % 256
+    blue = (x_coordinates * 29 + y_coordinates * 7 + seed * 5) % 256
+    return np.stack((red, green, blue), axis=-1).astype(np.uint8)
+
+
+def _create_dataset(
+    input_directory: Path,
+    *,
+    case: PipelineStageBenchmarkCase,
+    image_count: int,
+) -> list[Path]:
+    """Create deterministic JPEG inputs outside measured execution."""
+    relative_paths: list[Path] = []
+
+    for index in range(image_count):
+        relative_path = Path(f"group-{index % 4:02d}") / f"image-{index:04d}.jpg"
+        source_path = input_directory / relative_path
+        source_path.parent.mkdir(parents=True, exist_ok=True)
+        image = _pattern(
+            width=case.source_width,
+            height=case.source_height,
+            seed=case.seed + index,
+        )
+        Image.fromarray(image).save(
+            source_path,
+            format="JPEG",
+            quality=92,
+            optimize=False,
+            progressive=False,
+        )
+        relative_paths.append(relative_path)
+
+    return relative_paths
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        raise ValueError("values must not be empty")
+
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return ordered[0]
+
+    position = (len(ordered) - 1) * percentile
+    lower_index = int(position)
+    upper_index = min(lower_index + 1, len(ordered) - 1)
+    fraction = position - lower_index
+    return ordered[lower_index] + (ordered[upper_index] - ordered[lower_index]) * fraction
+
+
+def _statistics(values: list[float]) -> dict[str, float]:
+    return {
+        "minimum": min(values),
+        "mean": mean(values),
+        "median": _percentile(values, 0.50),
+        "p95": _percentile(values, 0.95),
+        "maximum": max(values),
+    }
+
+
+def _aggregate_hash(entries: list[tuple[Path, str]]) -> str:
+    digest = hashlib.sha256()
+    for relative_path, file_hash in sorted(entries, key=lambda item: item[0].as_posix()):
+        digest.update(relative_path.as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(bytes.fromhex(file_hash))
+    return digest.hexdigest()
+
+
+def _aggregate_files(root: Path, paths: list[Path]) -> str:
+    return _aggregate_hash([(path, sha256_file(root / path)) for path in paths])
+
+
+def _elapsed_ms(started_ns: int) -> float:
+    return (time.perf_counter_ns() - started_ns) / 1_000_000.0
+
+
+def _execute_once(
+    *,
+    input_directory: Path,
+    output_directory: Path,
+    resize_config: ResizeConfig,
+    image_count: int,
+) -> tuple[float, dict[str, float], str, str]:
+    stage_ms = dict.fromkeys(STAGE_NAMES, 0.0)
+    limits = SourceImageLimits()
+    policy = InputPolicy.AUDIT_ONLY
+    wall_started_ns = time.perf_counter_ns()
+
+    started_ns = time.perf_counter_ns()
+    discovered_images = discover_images(input_directory)
+    validate_unique_output_paths(
+        discovered_images,
+        preserve_directory_structure=True,
+        output_format="png",
+    )
+    stage_ms["discovery_and_preflight"] += _elapsed_ms(started_ns)
+
+    if len(discovered_images) != image_count:
+        raise RuntimeError("unexpected discovered-image count")
+
+    source_hash_entries: list[tuple[Path, str]] = []
+    output_hash_entries: list[tuple[Path, str]] = []
+
+    for discovered in discovered_images:
+        started_ns = time.perf_counter_ns()
+        output_relative_path = build_output_relative_path(
+            discovered.relative_path,
+            preserve_directory_structure=True,
+            output_format="png",
+        )
+        stage_ms["output_path_planning"] += _elapsed_ms(started_ns)
+
+        started_ns = time.perf_counter_ns()
+        source_hash = sha256_file(discovered.source_path)
+        stage_ms["source_hash"] += _elapsed_ms(started_ns)
+        source_hash_entries.append((discovered.relative_path, source_hash))
+
+        started_ns = time.perf_counter_ns()
+        decoded = decode_image_with_metadata(
+            discovered.source_path,
+            source_limits=limits,
+        )
+        stage_ms["decode_and_normalize"] += _elapsed_ms(started_ns)
+
+        started_ns = time.perf_counter_ns()
+        enforce_input_policy(decoded.metadata, policy)
+        stage_ms["input_policy"] += _elapsed_ms(started_ns)
+
+        started_ns = time.perf_counter_ns()
+        resized = resize_sample(decoded.image, resize_config)
+        stage_ms["resize_and_pad"] += _elapsed_ms(started_ns)
+
+        started_ns = time.perf_counter_ns()
+        output_path = write_png_atomic(
+            image=resized.image,
+            output_root=output_directory,
+            relative_path=output_relative_path,
+            overwrite=False,
+        )
+        stage_ms["png_encode_and_write"] += _elapsed_ms(started_ns)
+
+        started_ns = time.perf_counter_ns()
+        output_hash = sha256_file(output_path)
+        stage_ms["output_hash"] += _elapsed_ms(started_ns)
+        output_hash_entries.append((output_relative_path, output_hash))
+
+    wall_clock_ms = _elapsed_ms(wall_started_ns)
+    return (
+        wall_clock_ms,
+        stage_ms,
+        _aggregate_hash(source_hash_entries),
+        _aggregate_hash(output_hash_entries),
+    )
+
+
+def run_case(
+    case: PipelineStageBenchmarkCase,
+    *,
+    image_count: int | None = None,
+    warmup_iterations: int | None = None,
+    measured_iterations: int | None = None,
+) -> dict[str, Any]:
+    """Measure production-equivalent stages without changing runtime code."""
+    effective_image_count = case.image_count if image_count is None else image_count
+    warmups = case.warmup_iterations if warmup_iterations is None else warmup_iterations
+    iterations = case.measured_iterations if measured_iterations is None else measured_iterations
+
+    if effective_image_count <= 0:
+        raise ValueError("image_count must be positive")
+    if warmups < 0:
+        raise ValueError("warmup_iterations must be non-negative")
+    if iterations <= 0:
+        raise ValueError("measured_iterations must be positive")
+
+    resize_config = ResizeConfig(
+        target_width=case.target_width,
+        target_height=case.target_height,
+        allow_upscale=True,
+        max_upscale_factor=8.0,
+    )
+
+    with TemporaryDirectory() as temporary_directory:
+        workspace = Path(temporary_directory)
+        input_directory = workspace / "input"
+        input_directory.mkdir()
+        source_paths = _create_dataset(
+            input_directory,
+            case=case,
+            image_count=effective_image_count,
+        )
+        source_hash_before = _aggregate_files(input_directory, source_paths)
+
+        for warmup_index in range(warmups):
+            warmup_output = workspace / f"warmup-output-{warmup_index:02d}"
+            _execute_once(
+                input_directory=input_directory,
+                output_directory=warmup_output,
+                resize_config=resize_config,
+                image_count=effective_image_count,
+            )
+            shutil.rmtree(warmup_output)
+
+        wall_clock_values: list[float] = []
+        unattributed_values: list[float] = []
+        stage_values = {stage: [] for stage in STAGE_NAMES}
+        measured_source_hashes: set[str] = set()
+        measured_output_hashes: set[str] = set()
+
+        for iteration in range(iterations):
+            output_directory = workspace / f"measured-output-{iteration:02d}"
+            wall_clock_ms, stage_ms, source_hash, output_hash = _execute_once(
+                input_directory=input_directory,
+                output_directory=output_directory,
+                resize_config=resize_config,
+                image_count=effective_image_count,
+            )
+            wall_clock_values.append(wall_clock_ms)
+            for stage in STAGE_NAMES:
+                stage_values[stage].append(stage_ms[stage])
+            unattributed_values.append(max(0.0, wall_clock_ms - sum(stage_ms.values())))
+            measured_source_hashes.add(source_hash)
+            measured_output_hashes.add(output_hash)
+            shutil.rmtree(output_directory)
+
+        source_hash_after = _aggregate_files(input_directory, source_paths)
+
+    if source_hash_before != source_hash_after:
+        raise RuntimeError(f"source mutation detected for {case.name}")
+    if measured_source_hashes != {source_hash_before}:
+        raise RuntimeError(f"source hashing changed across measurements for {case.name}")
+    if len(measured_output_hashes) != 1:
+        raise RuntimeError(f"non-deterministic outputs detected for {case.name}")
+
+    stage_statistics = {stage: _statistics(values) for stage, values in stage_values.items()}
+    median_stage_total = sum(metrics["median"] for metrics in stage_statistics.values())
+    stages: dict[str, dict[str, float]] = {}
+    for stage in STAGE_NAMES:
+        metrics = stage_statistics[stage]
+        stages[stage] = {
+            **metrics,
+            "median_share_percent": (
+                100.0 * metrics["median"] / median_stage_total
+                if median_stage_total > 0.0
+                else 0.0
+            ),
+        }
+
+    bottleneck_name = max(STAGE_NAMES, key=lambda stage: stages[stage]["median"])
+    wall_clock = _statistics(wall_clock_values)
+    median_seconds = wall_clock["median"] / 1000.0
+    total_source_megapixels = (
+        effective_image_count * case.source_width * case.source_height / 1_000_000.0
+    )
+
+    return {
+        "name": case.name,
+        "image_count": effective_image_count,
+        "source_width": case.source_width,
+        "source_height": case.source_height,
+        "target_width": case.target_width,
+        "target_height": case.target_height,
+        "warmup_iterations": warmups,
+        "measured_iterations": iterations,
+        "wall_clock_ms": wall_clock,
+        "stages": stages,
+        "unattributed_overhead_ms": _statistics(unattributed_values),
+        "bottleneck_stage": {
+            "name": bottleneck_name,
+            "median_ms": stages[bottleneck_name]["median"],
+            "median_share_percent": stages[bottleneck_name]["median_share_percent"],
+        },
+        "throughput_images_per_second": effective_image_count / median_seconds,
+        "throughput_source_megapixels_per_second": total_source_megapixels / median_seconds,
+        "source_aggregate_sha256": source_hash_before,
+        "output_aggregate_sha256": next(iter(measured_output_hashes)),
+        "config_sha256": sha256_resize_config(resize_config),
+    }
+
+
+def _environment() -> dict[str, str | int | None]:
+    return {
+        "python": sys.version.split()[0],
+        "platform": platform.platform(),
+        "processor": platform.processor() or "unknown",
+        "logical_cpu_count": os.cpu_count(),
+        "numpy": np.__version__,
+        "opencv": cv2.__version__,
+        "pillow": PIL.__version__,
+        "omp_num_threads": os.environ.get("OMP_NUM_THREADS", "unset"),
+        "openblas_num_threads": os.environ.get("OPENBLAS_NUM_THREADS", "unset"),
+        "mkl_num_threads": os.environ.get("MKL_NUM_THREADS", "unset"),
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Measure production-equivalent Smart Beauty pipeline stages."
+    )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Use at most two images, no warmup, and two measured iterations.",
+    )
+    parser.add_argument(
+        "--case",
+        action="append",
+        choices=[case.name for case in CASES],
+        help="Run only selected cases. May be repeated.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("benchmarks/results/pipeline_stage_benchmark.json"),
+        help="JSON report destination.",
+    )
+    arguments = parser.parse_args()
+    selected_names = set(arguments.case) if arguments.case else None
+    selected_cases = [
+        case for case in CASES if selected_names is None or case.name in selected_names
+    ]
+
+    results = [
+        run_case(
+            case,
+            image_count=min(case.image_count, 2) if arguments.quick else None,
+            warmup_iterations=0 if arguments.quick else None,
+            measured_iterations=2 if arguments.quick else None,
+        )
+        for case in selected_cases
+    ]
+    report = {
+        "schema_version": "1.0",
+        "generated_at_utc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "environment": _environment(),
+        "cases": results,
+    }
+    arguments.output.parent.mkdir(parents=True, exist_ok=True)
+    arguments.output.write_text(
+        json.dumps(report, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    for result in results:
+        wall_clock = result["wall_clock_ms"]
+        bottleneck = result["bottleneck_stage"]
+        print(
+            f"{result['name']}: median={wall_clock['median']:.3f} ms, "
+            f"throughput={result['throughput_images_per_second']:.2f} img/s, "
+            f"bottleneck={bottleneck['name']} "
+            f"({bottleneck['median_share_percent']:.1f}%)"
+        )
+    print(f"Report: {arguments.output}")
+
+
+if __name__ == "__main__":
+    main()

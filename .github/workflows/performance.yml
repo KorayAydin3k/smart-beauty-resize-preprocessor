@@ -1,0 +1,54 @@
+name: Performance measurement
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  measure:
+    name: Quick benchmark reports
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      PYTHONHASHSEED: "0"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python
+        run: uv python install 3.11
+
+      - name: Install project
+        run: uv sync --locked --all-groups
+
+      - name: Measure resize kernel
+        run: uv run python -m benchmarks.benchmark_resize --quick
+
+      - name: Measure pipeline stages
+        run: uv run python -m benchmarks.benchmark_pipeline_stages --quick
+
+      - name: Measure end-to-end batch
+        run: uv run python -m benchmarks.benchmark_batch --quick
+
+      - name: Upload benchmark reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-reports
+          path: benchmarks/results/*.json
+          if-no-files-found: error

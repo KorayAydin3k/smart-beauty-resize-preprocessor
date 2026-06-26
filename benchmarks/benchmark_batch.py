@@ -250,6 +250,9 @@ def _execute_once(
     if not artifacts.summary_path.is_file():
         raise RuntimeError("run summary was not written")
 
+    if not artifacts.dataset_audit_path.is_file():
+        raise RuntimeError("dataset audit was not written")
+
     output_paths = _output_relative_paths(output_directory)
 
     if len(output_paths) != image_count:

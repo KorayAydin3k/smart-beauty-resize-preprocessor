@@ -163,6 +163,20 @@ prior runs remain governed by the existing overwrite/skip behavior. Flat-output
 mode keeps its deterministic source-path hashing behavior. A collision preflight
 failure creates no processed image and no `_runs` artifact.
 
+### Performance measurement
+
+The repository includes measurement-only benchmark harnesses for the resize
+kernel, production-equivalent pipeline stages, and complete batch execution.
+Quick local measurement:
+
+    uv run python -m benchmarks.benchmark_resize --quick
+    uv run python -m benchmarks.benchmark_pipeline_stages --quick
+    uv run python -m benchmarks.benchmark_batch --quick
+
+Reports are written under the ignored `benchmarks/results/` directory. Results
+are environment-specific and are not used as hard CI thresholds. See
+`docs/performance-measurement.md` for the measurement and interpretation rules.
+
 ### Exit codes
 
 - `0`: completed without failed images;
