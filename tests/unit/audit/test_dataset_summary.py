@@ -23,11 +23,16 @@ from smart_beauty_resize.contracts import (
     ManifestSerializationError,
     ProvenanceError,
 )
-from smart_beauty_resize.io import ImageDecodeMetadata, InputPolicy
+from smart_beauty_resize.io import ImageDecodeMetadata, InputPolicy, SourceImageLimits
 
 CONFIG_HASH = "a" * 64
 SOURCE_HASH = "b" * 64
 OUTPUT_HASH = "c" * 64
+LIMITS = SourceImageLimits(
+    max_width=12000,
+    max_height=12000,
+    max_pixels=64000000,
+)
 
 
 def _metadata(
@@ -72,7 +77,7 @@ def _record(
 ) -> ImageProcessingRecord:
     if status is ProcessingStatus.SUCCESS:
         return ImageProcessingRecord(
-            schema_version="1.2",
+            schema_version="1.3",
             source_relative_path=Path(source_path),
             output_relative_path=Path(source_path).with_suffix(".png"),
             status=status,
@@ -95,10 +100,11 @@ def _record(
             error_message=None,
             decode_metadata=metadata,
             input_policy=InputPolicy.STRICT_RGB8,
+            source_limits=LIMITS,
         )
 
     return ImageProcessingRecord(
-        schema_version="1.2",
+        schema_version="1.3",
         source_relative_path=Path(source_path),
         output_relative_path=None,
         status=status,
@@ -121,6 +127,7 @@ def _record(
         error_message="expected test failure",
         decode_metadata=metadata,
         input_policy=InputPolicy.STRICT_RGB8,
+        source_limits=LIMITS,
     )
 
 
@@ -171,7 +178,7 @@ def _result() -> BatchExecutionResult:
         ),
     )
     summary = BatchRunSummary(
-        schema_version="1.2",
+        schema_version="1.3",
         run_id="20260625T160000Z-audit",
         started_at_utc=datetime(2026, 6, 25, 16, 0, tzinfo=UTC),
         finished_at_utc=datetime(2026, 6, 25, 16, 1, tzinfo=UTC),
@@ -183,6 +190,7 @@ def _result() -> BatchExecutionResult:
         target_height=32,
         config_sha256=CONFIG_HASH,
         input_policy=InputPolicy.STRICT_RGB8,
+        source_limits=LIMITS,
     )
     return BatchExecutionResult(records=records, summary=summary)
 
@@ -213,6 +221,11 @@ def test_build_dataset_audit_summary_aggregates_metadata_and_errors() -> None:
     assert summary.decode_metadata_coverage_percent == 50.0
     assert payload["run_id"] == "20260625T160000Z-audit"
     assert payload["input_policy"] == "strict_rgb8"
+    assert payload["source_limits"] == {
+        "max_height": 12000,
+        "max_pixels": 64000000,
+        "max_width": 12000,
+    }
     assert payload["total_records"] == 4
     assert payload["records_with_decode_metadata"] == 2
     assert payload["records_without_decode_metadata"] == 2

@@ -1,8 +1,12 @@
-schema_version: "1.1"
+schema_version: "1.2"
 profile_id: "smart-beauty-default"
-profile_version: "1.1.0"
+profile_version: "1.2.0"
 model_family: "shared"
 input_policy: "audit_only"
+source_limits:
+  max_width: 12000
+  max_height: 12000
+  max_pixels: 64000000
 resize:
   target_width: 512
   target_height: 512

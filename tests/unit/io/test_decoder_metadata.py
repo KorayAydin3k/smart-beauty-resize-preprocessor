@@ -11,6 +11,8 @@ from smart_beauty_resize import (
     DecodedImage,
     ImageDecodeError,
     ImageDecodeMetadata,
+    SourceImageLimitError,
+    SourceImageLimits,
     decode_image,
     decode_image_with_metadata,
 )
@@ -184,3 +186,43 @@ def test_decode_metadata_contract_rejects_inconsistent_geometry() -> None:
             image=np.zeros((2, 2, 3), dtype=np.uint8),
             metadata=metadata,
         )
+
+
+def test_source_limits_are_enforced_before_rgb_conversion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    image_path = tmp_path / "oversized.png"
+    Image.new("RGB", (20, 10), (1, 2, 3)).save(image_path)
+
+    def fail_if_converted(
+        self: Image.Image,
+        *args: object,
+        **kwargs: object,
+    ) -> Image.Image:
+        del self, args, kwargs
+        raise AssertionError("RGB conversion must not run after a header-level rejection")
+
+    monkeypatch.setattr(Image.Image, "convert", fail_if_converted)
+
+    with pytest.raises(SourceImageLimitError, match="width 20 > max_width 19"):
+        decode_image_with_metadata(
+            image_path,
+            source_limits=SourceImageLimits(max_width=19),
+        )
+
+
+def test_source_limits_accept_exact_boundary(tmp_path: Path) -> None:
+    image_path = tmp_path / "boundary.png"
+    Image.new("RGB", (20, 10), (1, 2, 3)).save(image_path)
+
+    result = decode_image_with_metadata(
+        image_path,
+        source_limits=SourceImageLimits(
+            max_width=20,
+            max_height=10,
+            max_pixels=200,
+        ),
+    )
+
+    assert result.image.shape == (10, 20, 3)

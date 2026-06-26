@@ -16,6 +16,33 @@ class InputPolicy(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class SourceImageLimits:
+    """Optional pre-decode limits for source image dimensions.
+
+    ``None`` disables one limit. The object is immutable so it can be shared
+    safely across batch records, summaries, and decoder calls.
+    """
+
+    max_width: int | None = None
+    max_height: int | None = None
+    max_pixels: int | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("max_width", "max_height", "max_pixels"):
+            value = getattr(self, field_name)
+            if value is not None and (type(value) is not int or value <= 0):
+                raise ImageDecodeError(f"{field_name} must be a positive integer or None")
+
+    @property
+    def enabled(self) -> bool:
+        """Return whether at least one source limit is active."""
+        return any(
+            value is not None
+            for value in (self.max_width, self.max_height, self.max_pixels)
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ImageDecodeMetadata:
     """Observable source and canonicalization metadata for one decoded image.
 

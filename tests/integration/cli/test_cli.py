@@ -94,6 +94,7 @@ def test_batch_help() -> None:
     assert "--target-width" in output
     assert "--target-height" in output
     assert "--input-policy" in output
+    assert output.count("Maximum source") == 3
 
 
 def test_successful_batch_command(
@@ -133,6 +134,11 @@ def test_successful_batch_command(
     assert summary["failed"] == 0
     assert summary["skipped"] == 0
     assert summary["input_policy"] == "audit_only"
+    assert summary["source_limits"] == {
+        "max_height": None,
+        "max_pixels": None,
+        "max_width": None,
+    }
 
     audit = json.loads(
         (run_directories[0] / "dataset_audit.json").read_text(encoding="utf-8")
@@ -141,6 +147,11 @@ def test_successful_batch_command(
     assert audit["records_with_decode_metadata"] == 1
     assert audit["records_without_decode_metadata"] == 0
     assert audit["source_format_counts"] == {"JPEG": 1}
+    assert audit["source_limits"] == {
+        "max_height": None,
+        "max_pixels": None,
+        "max_width": None,
+    }
 
 
 def test_corrupt_image_exits_two_and_writes_manifest(
@@ -416,8 +427,11 @@ def _write_profile(
     *,
     target_width: int = 36,
     target_height: int = 28,
-    schema_version: str = "1.1",
+    schema_version: str = "1.2",
     input_policy: str = "audit_only",
+    max_source_width: int | None = 12000,
+    max_source_height: int | None = 12000,
+    max_source_pixels: int | None = 64000000,
 ) -> None:
     lines = [
         f'schema_version: "{schema_version}"',
@@ -425,8 +439,17 @@ def _write_profile(
         f'profile_version: "{schema_version}.0"',
         'model_family: "test"',
     ]
-    if schema_version == "1.1":
+    if schema_version in {"1.1", "1.2"}:
         lines.append(f'input_policy: "{input_policy}"')
+    if schema_version == "1.2":
+        lines.extend(
+            [
+                "source_limits:",
+                f"  max_width: {max_source_width if max_source_width is not None else 'null'}",
+                f"  max_height: {max_source_height if max_source_height is not None else 'null'}",
+                f"  max_pixels: {max_source_pixels if max_source_pixels is not None else 'null'}",
+            ]
+        )
 
     lines.extend(
         [
@@ -493,6 +516,11 @@ def test_profile_driven_batch_command(
         (run_directories[0] / "run_summary.json").read_text(encoding="utf-8")
     )
     assert summary["input_policy"] == "audit_only"
+    assert summary["source_limits"] == {
+        "max_height": 12000,
+        "max_pixels": 64000000,
+        "max_width": 12000,
+    }
 
 
 def test_profile_cannot_be_combined_with_manual_resize_options(
@@ -793,3 +821,155 @@ def test_legacy_profile_defaults_to_audit_only(
         (run_directories[0] / "run_summary.json").read_text(encoding="utf-8")
     )
     assert summary["input_policy"] == "audit_only"
+
+
+def test_manual_source_limit_rejects_before_decode_and_persists_limits(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+
+    _write_image(input_dir / "oversized.png", value=90)
+
+    result = runner.invoke(
+        app,
+        [
+            *_batch_arguments(input_dir, output_dir),
+            "--max-source-width",
+            "19",
+            "--max-source-height",
+            "10",
+            "--max-source-pixels",
+            "200",
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    run_directories = _run_directories(output_dir)
+    assert len(run_directories) == 1
+
+    record = json.loads(
+        (run_directories[0] / "manifest.jsonl").read_text(encoding="utf-8").strip()
+    )
+    assert record["status"] == "failed"
+    assert record["error_type"] == "SourceImageLimitError"
+    assert record["decode_metadata"] is None
+    assert record["source_limits"] == {
+        "max_height": 10,
+        "max_pixels": 200,
+        "max_width": 19,
+    }
+
+    summary = json.loads(
+        (run_directories[0] / "run_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["source_limits"] == record["source_limits"]
+
+    audit = json.loads(
+        (run_directories[0] / "dataset_audit.json").read_text(encoding="utf-8")
+    )
+    assert audit["source_limits"] == record["source_limits"]
+    assert audit["error_type_counts"] == {"SourceImageLimitError": 1}
+    assert audit["records_without_decode_metadata"] == 1
+
+
+def test_profile_source_limit_rejects_oversized_image(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    profile_path = tmp_path / "profile.yaml"
+
+    _write_image(input_dir / "oversized.png", value=90)
+    _write_profile(
+        profile_path,
+        max_source_width=19,
+        max_source_height=10,
+        max_source_pixels=200,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            str(profile_path),
+        ],
+    )
+
+    assert result.exit_code == 2, result.output
+    run_directories = _run_directories(output_dir)
+    record = json.loads(
+        (run_directories[0] / "manifest.jsonl").read_text(encoding="utf-8").strip()
+    )
+    assert record["error_type"] == "SourceImageLimitError"
+
+
+def test_profile_cannot_be_combined_with_manual_source_limit(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    profile_path = tmp_path / "profile.yaml"
+    input_dir.mkdir()
+    _write_profile(profile_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            str(profile_path),
+            "--max-source-width",
+            "1000",
+        ],
+    )
+
+    assert result.exit_code == 1
+    output = _strip_ansi(result.output)
+    assert "cannot be combined" in output
+    assert "--max-source-width" in output
+    assert _run_directories(output_dir) == []
+
+
+def test_previous_profile_schema_defaults_to_unlimited_source_dimensions(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    profile_path = tmp_path / "profile-1.1.yaml"
+
+    _write_image(input_dir / "sample.png", value=90)
+    _write_profile(profile_path, schema_version="1.1")
+
+    result = runner.invoke(
+        app,
+        [
+            "batch",
+            "--input-dir",
+            str(input_dir),
+            "--output-dir",
+            str(output_dir),
+            "--profile",
+            str(profile_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    run_directories = _run_directories(output_dir)
+    summary = json.loads(
+        (run_directories[0] / "run_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["source_limits"] == {
+        "max_height": None,
+        "max_pixels": None,
+        "max_width": None,
+    }

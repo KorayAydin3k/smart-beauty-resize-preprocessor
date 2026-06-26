@@ -9,7 +9,7 @@ from smart_beauty_resize.batch.contracts import (
     ImageProcessingRecord,
 )
 from smart_beauty_resize.contracts import ManifestSerializationError
-from smart_beauty_resize.io.contracts import ImageDecodeMetadata
+from smart_beauty_resize.io.contracts import ImageDecodeMetadata, SourceImageLimits
 
 
 def _datetime_to_utc_iso(value: datetime) -> str:
@@ -53,6 +53,21 @@ def _decode_metadata_to_dict(
     }
 
 
+def _source_limits_to_dict(
+    limits: SourceImageLimits,
+) -> dict[str, int | None]:
+    if not isinstance(limits, SourceImageLimits):
+        raise ManifestSerializationError(
+            "source limits must be a SourceImageLimits instance"
+        )
+
+    return {
+        "max_height": limits.max_height,
+        "max_pixels": limits.max_pixels,
+        "max_width": limits.max_width,
+    }
+
+
 def record_to_dict(
     record: ImageProcessingRecord,
 ) -> dict[str, object]:
@@ -79,6 +94,7 @@ def record_to_dict(
         "resized_height": record.resized_height,
         "resized_width": record.resized_width,
         "schema_version": record.schema_version,
+        "source_limits": _source_limits_to_dict(record.source_limits),
         "source_relative_path": record.source_relative_path.as_posix(),
         "source_sha256": record.source_sha256,
         "status": record.status.value,
@@ -102,6 +118,7 @@ def summary_to_dict(
         "run_id": summary.run_id,
         "schema_version": summary.schema_version,
         "skipped": summary.skipped,
+        "source_limits": _source_limits_to_dict(summary.source_limits),
         "started_at_utc": _datetime_to_utc_iso(summary.started_at_utc),
         "success_rate": summary.success_rate,
         "successful": summary.successful,

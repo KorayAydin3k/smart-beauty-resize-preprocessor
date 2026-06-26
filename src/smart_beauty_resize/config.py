@@ -12,10 +12,10 @@ from smart_beauty_resize.contracts import (
     ResizeConfig,
     SmartBeautyResizeError,
 )
-from smart_beauty_resize.io.contracts import InputPolicy
+from smart_beauty_resize.io.contracts import InputPolicy, SourceImageLimits
 
-CURRENT_PROFILE_SCHEMA_VERSION: Final = "1.1"
-SUPPORTED_PROFILE_SCHEMA_VERSIONS: Final = frozenset({"1.0", "1.1"})
+CURRENT_PROFILE_SCHEMA_VERSION: Final = "1.2"
+SUPPORTED_PROFILE_SCHEMA_VERSIONS: Final = frozenset({"1.0", "1.1", "1.2"})
 _PROFILE_ID_PATTERN: Final = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _SEMANTIC_VERSION_PATTERN: Final = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
@@ -32,6 +32,7 @@ _BASE_TOP_LEVEL_FIELDS: Final = frozenset(
 _PROFILE_FIELDS_BY_SCHEMA: Final = {
     "1.0": _BASE_TOP_LEVEL_FIELDS,
     "1.1": _BASE_TOP_LEVEL_FIELDS | {"input_policy"},
+    "1.2": _BASE_TOP_LEVEL_FIELDS | {"input_policy", "source_limits"},
 }
 _RESIZE_FIELDS: Final = frozenset(
     {
@@ -42,6 +43,13 @@ _RESIZE_FIELDS: Final = frozenset(
         "padding_value",
     }
 )
+_SOURCE_LIMIT_FIELDS: Final = frozenset(
+    {
+        "max_width",
+        "max_height",
+        "max_pixels",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,7 +58,8 @@ class PreprocessingProfile:
 
     Schema ``1.0`` profiles contain resize settings only and resolve to the
     historical ``audit_only`` input policy. Schema ``1.1`` profiles make the
-    source-image acceptance policy explicit.
+    source-image acceptance policy explicit. Schema ``1.2`` also versions
+    pre-decode source-dimension limits.
     """
 
     schema_version: str
@@ -59,6 +68,7 @@ class PreprocessingProfile:
     model_family: str
     resize_config: ResizeConfig
     input_policy: InputPolicy = InputPolicy.AUDIT_ONLY
+    source_limits: SourceImageLimits = SourceImageLimits()
 
     def __post_init__(self) -> None:
         _validate_supported_schema_version(self.schema_version)
@@ -70,6 +80,10 @@ class PreprocessingProfile:
             raise ProfileConfigurationError("resize_config must be a ResizeConfig instance")
         if not isinstance(self.input_policy, InputPolicy):
             raise ProfileConfigurationError("input_policy must be an InputPolicy instance")
+        if not isinstance(self.source_limits, SourceImageLimits):
+            raise ProfileConfigurationError(
+                "source_limits must be a SourceImageLimits instance"
+            )
 
 
 def _validate_mapping(
@@ -162,6 +176,44 @@ def _parse_input_policy(value: object) -> InputPolicy:
         raise ProfileConfigurationError(f"input_policy must be one of: {allowed}") from exc
 
 
+def _parse_optional_positive_integer(
+    name: str,
+    value: object,
+) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or value <= 0:
+        raise ProfileConfigurationError(f"{name} must be a positive integer or null")
+    return value
+
+
+def _parse_source_limits(value: object) -> SourceImageLimits:
+    source_limits_payload = _validate_mapping("source_limits", value)
+    _validate_field_set(
+        "source_limits",
+        source_limits_payload,
+        _SOURCE_LIMIT_FIELDS,
+    )
+
+    try:
+        return SourceImageLimits(
+            max_width=_parse_optional_positive_integer(
+                "source_limits.max_width",
+                source_limits_payload["max_width"],
+            ),
+            max_height=_parse_optional_positive_integer(
+                "source_limits.max_height",
+                source_limits_payload["max_height"],
+            ),
+            max_pixels=_parse_optional_positive_integer(
+                "source_limits.max_pixels",
+                source_limits_payload["max_pixels"],
+            ),
+        )
+    except SmartBeautyResizeError as exc:
+        raise ProfileConfigurationError(f"invalid source limits: {exc}") from exc
+
+
 def profile_from_mapping(payload: object) -> PreprocessingProfile:
     """Build a strict preprocessing profile from an in-memory mapping."""
     root = _validate_mapping("profile", payload)
@@ -195,6 +247,11 @@ def profile_from_mapping(payload: object) -> PreprocessingProfile:
         if schema_version == "1.0"
         else _parse_input_policy(root["input_policy"])
     )
+    source_limits = (
+        SourceImageLimits()
+        if schema_version in {"1.0", "1.1"}
+        else _parse_source_limits(root["source_limits"])
+    )
 
     return PreprocessingProfile(
         schema_version=schema_version,
@@ -203,6 +260,7 @@ def profile_from_mapping(payload: object) -> PreprocessingProfile:
         model_family=model_family,
         resize_config=resize_config,
         input_policy=input_policy,
+        source_limits=source_limits,
     )
 
 

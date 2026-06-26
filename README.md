@@ -30,7 +30,8 @@ Versioned profile usage:
       --profile configs/default.yaml
 
 A profile and manual preprocessing options are mutually exclusive. The profile
-owns both resize settings and the source input policy. Runtime controls such as
+owns resize settings, the source input policy, and pre-decode source limits.
+Runtime controls such as
 `--overwrite`, `--fail-fast`, `--flat-output`, and `--verbose` remain available
 in either mode.
 
@@ -39,6 +40,7 @@ The batch pipeline:
 - discovers supported images recursively;
 - processes files in deterministic order;
 - applies EXIF orientation;
+- enforces configured width, height, and pixel-count limits before full decode;
 - preserves aspect ratio;
 - uses letterbox padding without stretching or cropping;
 - writes RGB PNG outputs;
@@ -77,13 +79,17 @@ For model pipelines that require native three-channel RGB sources with known
 Policy violations become per-image failed records unless `--fail-fast` is used.
 The selected policy is stored in each manifest item and in `run_summary.json`.
 
-Profile schema `1.1` stores the policy explicitly:
+Profile schema `1.2` stores both the policy and source limits explicitly:
 
-    schema_version: "1.1"
+    schema_version: "1.2"
     profile_id: "smart-beauty-default"
-    profile_version: "1.1.0"
+    profile_version: "1.2.0"
     model_family: "shared"
     input_policy: "audit_only"
+    source_limits:
+      max_width: 12000
+      max_height: 12000
+      max_pixels: 64000000
     resize:
       target_width: 512
       target_height: 512
@@ -91,15 +97,36 @@ Profile schema `1.1` stores the policy explicitly:
       max_upscale_factor: 1.5
       padding_value: [127, 127, 127]
 
-Legacy schema `1.0` profiles remain supported and resolve to `audit_only`.
-`--input-policy` is a manual-mode option and cannot override a profile. The
-resize-only `config_sha256` semantics remain unchanged.
+Legacy schema `1.0` profiles remain supported and resolve to `audit_only` with
+unlimited source dimensions. Schema `1.1` profiles keep their explicit input
+policy and also resolve to unlimited source dimensions. Manual preprocessing
+options cannot override a profile. The resize-only `config_sha256` semantics
+remain unchanged.
+
+### Pre-decode source limits
+
+Manual mode can reject oversized files before Pillow converts or fully loads
+their pixel payload:
+
+    --max-source-width 12000 \
+    --max-source-height 12000 \
+    --max-source-pixels 64000000
+
+Each manual option is optional; omitting all three preserves the previous
+unlimited behavior. Current profiles use a `source_limits` mapping. A `null`
+value disables one individual limit.
+
+Limit violations become failed records with `SourceImageLimitError`, or stop
+the run immediately under `--fail-fast`. The selected limits are stored in each
+manifest item, `run_summary.json`, and `dataset_audit.json`. Manifest/run-summary
+schema `1.3` and dataset-audit schema `1.1` add this provenance without changing
+resize pixels, interpolation, or the resize-only `config_sha256`.
 
 ### Dataset audit summary
 
 Every completed run now writes `dataset_audit.json` beside the manifest and run
-summary. The independent audit schema starts at `1.0` and links back to the run
-through `run_id`, `config_sha256`, and `input_policy`.
+summary. Audit schema `1.1` links back to the run through `run_id`,
+`config_sha256`, `input_policy`, and `source_limits`.
 
 The audit aggregates only observed manifest data. It includes:
 
