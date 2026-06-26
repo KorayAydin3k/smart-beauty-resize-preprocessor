@@ -1,4 +1,16 @@
-# smart-beauty-resize-preprocessor
+# Smart Beauty Resize Preprocessor
+
+Production-grade, deterministic image normalization for Smart Beauty computer-vision
+pipelines. Version `1.0.0` establishes a stable CLI, Python API, preprocessing
+profile contract, provenance artifacts, safety gates, and reproducibility baseline.
+
+Release documentation:
+
+- [Integration guide](docs/integration-guide.md)
+- [Release checklist](docs/release-checklist.md)
+- [Performance measurement](docs/performance-measurement.md)
+- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
 
 <!-- BATCH-CLI-DOCS-START -->
 
@@ -176,6 +188,20 @@ Quick local measurement:
 Reports are written under the ignored `benchmarks/results/` directory. Results
 are environment-specific and are not used as hard CI thresholds. See
 `docs/performance-measurement.md` for the measurement and interpretation rules.
+
+### Release and handoff
+
+The `1.0.0` release contract is documented in `docs/integration-guide.md`. Before
+tagging a release, complete `docs/release-checklist.md`, including validation on
+a private representative Smart Beauty acceptance dataset. Never commit real user
+images, generated outputs, or benchmark result files.
+
+Build distributable artifacts with:
+
+    uv build
+
+The resulting wheel and source distribution are written to the ignored `dist/`
+directory.
 
 ### Exit codes
 
