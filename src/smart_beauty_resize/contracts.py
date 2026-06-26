@@ -63,6 +63,10 @@ class DiscoveryError(SmartBeautyResizeError):
     """Raised when deterministic input-file discovery fails."""
 
 
+class OutputPathCollisionError(DiscoveryError):
+    """Raised when multiple source images map to the same output path."""
+
+
 class OutputWriteError(SmartBeautyResizeError):
     """Raised when a processed output cannot be written safely."""
 

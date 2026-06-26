@@ -38,6 +38,7 @@ in either mode.
 The batch pipeline:
 
 - discovers supported images recursively;
+- preflights output paths and rejects source-to-output collisions before processing;
 - processes files in deterministic order;
 - applies EXIF orientation;
 - enforces configured width, height, and pixel-count limits before full decode;
@@ -147,6 +148,20 @@ Programmatic aggregation is also available:
     from smart_beauty_resize.audit import build_dataset_audit_summary
 
     audit = build_dataset_audit_summary(batch_result)
+
+### Output collision preflight
+
+Before hashing, decoding, resizing, or writing any image, the batch pipeline
+computes every source-to-output mapping. If multiple sources would resolve to
+the same PNG path, the entire run is rejected with `OutputPathCollisionError`.
+This commonly occurs when files such as `sample.jpg` and `sample.png` share one
+directory because both would map to `sample.png`. Comparisons are
+case-insensitive for consistent behavior across filesystems.
+
+`--overwrite` does not bypass an input-to-input collision. Existing outputs from
+prior runs remain governed by the existing overwrite/skip behavior. Flat-output
+mode keeps its deterministic source-path hashing behavior. A collision preflight
+failure creates no processed image and no `_runs` artifact.
 
 ### Exit codes
 

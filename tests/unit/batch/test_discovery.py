@@ -9,9 +9,11 @@ from smart_beauty_resize.batch import (
     build_output_relative_path,
     discover_images,
     is_supported_image_path,
+    validate_unique_output_paths,
 )
 from smart_beauty_resize.contracts import (
     DiscoveryError,
+    OutputPathCollisionError,
     SmartBeautyResizeError,
 )
 
@@ -234,3 +236,108 @@ def test_discovery_error_inherits_package_base() -> None:
         DiscoveryError,
         SmartBeautyResizeError,
     )
+
+
+def test_output_collision_preflight_rejects_extension_collision(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "rgb.jpg").write_bytes(b"jpg")
+    (input_dir / "rgb.png").write_bytes(b"png")
+
+    discovered = discover_images(input_dir)
+
+    with pytest.raises(OutputPathCollisionError) as error:
+        validate_unique_output_paths(
+            discovered,
+            preserve_directory_structure=True,
+        )
+
+    assert str(error.value) == (
+        "multiple source images resolve to the same output path:\n- rgb.png <- [rgb.jpg, rgb.png]"
+    )
+
+
+def test_output_collision_preflight_reports_all_groups_deterministically(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    (input_dir / "z").mkdir(parents=True)
+    (input_dir / "A").mkdir()
+    (input_dir / "z" / "photo.jpg").write_bytes(b"jpg")
+    (input_dir / "z" / "photo.png").write_bytes(b"png")
+    (input_dir / "A" / "sample.jpeg").write_bytes(b"jpeg")
+    (input_dir / "A" / "sample.tiff").write_bytes(b"tiff")
+
+    discovered = discover_images(input_dir)
+
+    with pytest.raises(OutputPathCollisionError) as error:
+        validate_unique_output_paths(
+            discovered,
+            preserve_directory_structure=True,
+        )
+
+    assert str(error.value) == (
+        "multiple source images resolve to the same output path:\n"
+        "- A/sample.png <- [A/sample.jpeg, A/sample.tiff]\n"
+        "- z/photo.png <- [z/photo.jpg, z/photo.png]"
+    )
+
+
+def test_output_collision_preflight_is_case_insensitive(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "Photo.jpg").write_bytes(b"jpg")
+    (input_dir / "photo.png").write_bytes(b"png")
+
+    with pytest.raises(OutputPathCollisionError):
+        validate_unique_output_paths(
+            discover_images(input_dir),
+            preserve_directory_structure=True,
+        )
+
+
+def test_output_collision_preflight_allows_same_stem_in_different_directories(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    (input_dir / "a").mkdir(parents=True)
+    (input_dir / "b").mkdir()
+    (input_dir / "a" / "sample.jpg").write_bytes(b"jpg")
+    (input_dir / "b" / "sample.png").write_bytes(b"png")
+
+    validate_unique_output_paths(
+        discover_images(input_dir),
+        preserve_directory_structure=True,
+    )
+
+
+def test_output_collision_preflight_preserves_flat_output_behavior(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    (input_dir / "sample.jpg").write_bytes(b"jpg")
+    (input_dir / "sample.png").write_bytes(b"png")
+
+    validate_unique_output_paths(
+        discover_images(input_dir),
+        preserve_directory_structure=False,
+    )
+
+
+def test_output_collision_preflight_rejects_invalid_collection() -> None:
+    with pytest.raises(DiscoveryError, match="must be a tuple"):
+        validate_unique_output_paths(
+            [],  # type: ignore[arg-type]
+            preserve_directory_structure=True,
+        )
+
+    with pytest.raises(DiscoveryError, match="entries must be DiscoveredImage"):
+        validate_unique_output_paths(
+            (Path("image.jpg"),),  # type: ignore[arg-type]
+            preserve_directory_structure=True,
+        )

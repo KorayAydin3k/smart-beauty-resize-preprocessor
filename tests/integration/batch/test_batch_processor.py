@@ -10,6 +10,7 @@ from smart_beauty_resize import (
     ImageDecodeError,
     InputPolicy,
     InputPolicyViolationError,
+    OutputPathCollisionError,
     ResizeConfig,
     SourceImageLimitError,
     SourceImageLimits,
@@ -413,3 +414,55 @@ def test_strict_rgb8_fail_fast_propagates_policy_violation(
                 fail_fast=True,
             )
         )
+
+
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_output_collision_fails_before_hash_decode_or_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    overwrite: bool,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+
+    _write_rgb_image(
+        input_dir / "sample.jpg",
+        width=12,
+        height=8,
+        value=50,
+    )
+    _write_rgb_image(
+        input_dir / "sample.png",
+        width=8,
+        height=12,
+        value=100,
+    )
+
+    def unexpected_hash(_: Path) -> str:
+        raise AssertionError("source hashing must not start before collision preflight")
+
+    def unexpected_decode(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("decoding must not start before collision preflight")
+
+    monkeypatch.setattr(
+        "smart_beauty_resize.batch.processor.sha256_file",
+        unexpected_hash,
+    )
+    monkeypatch.setattr(
+        "smart_beauty_resize.batch.processor.decode_image_with_metadata",
+        unexpected_decode,
+    )
+
+    with pytest.raises(
+        OutputPathCollisionError,
+        match="multiple source images resolve to the same output path",
+    ):
+        process_batch(
+            _config(
+                input_dir,
+                output_dir,
+                overwrite=overwrite,
+            )
+        )
+
+    assert not output_dir.exists()
