@@ -17,9 +17,11 @@ from smart_beauty_resize.batch import (
 from smart_beauty_resize.contracts import (
     ManifestSerializationError,
     ManifestWriteError,
+    ProvenanceError,
     SmartBeautyResizeError,
 )
 from smart_beauty_resize.provenance import (
+    DATASET_AUDIT_FILENAME,
     MANIFEST_FILENAME,
     RUNS_DIRECTORY_NAME,
     SUMMARY_FILENAME,
@@ -79,6 +81,7 @@ def test_write_batch_artifacts_persists_records_and_summary(
     assert artifacts.run_directory == expected_directory
     assert artifacts.manifest_path.name == MANIFEST_FILENAME
     assert artifacts.summary_path.name == SUMMARY_FILENAME
+    assert artifacts.dataset_audit_path.name == DATASET_AUDIT_FILENAME
 
     manifest_lines = artifacts.manifest_path.read_text(encoding="utf-8").splitlines()
 
@@ -106,6 +109,26 @@ def test_write_batch_artifacts_persists_records_and_summary(
     assert summary["failed"] == result.summary.failed
     assert summary["skipped"] == result.summary.skipped
 
+    audit = json.loads(artifacts.dataset_audit_path.read_text(encoding="utf-8"))
+
+    assert audit["schema_version"] == "1.0"
+    assert audit["run_id"] == result.summary.run_id
+    assert audit["config_sha256"] == result.summary.config_sha256
+    assert audit["input_policy"] == "audit_only"
+    assert audit["total_records"] == 2
+    assert audit["records_with_decode_metadata"] == 1
+    assert audit["records_without_decode_metadata"] == 1
+    assert audit["decode_metadata_coverage_percent"] == 50.0
+    assert audit["status_counts"] == {"failed": 1, "skipped": 0, "success": 1}
+    assert audit["source_format_counts"] == {"JPEG": 1}
+    assert audit["source_mode_counts"] == {"RGB": 1}
+    assert audit["source_bit_depth_counts"] == {"8": 1}
+    assert audit["source_channel_count_counts"] == {"3": 1}
+    assert audit["error_type_counts"] == {"ImageDecodeError": 1}
+    assert audit["source_width_statistics"]["maximum"] == 20
+    assert audit["source_height_statistics"]["maximum"] == 10
+    assert audit["source_pixel_count_statistics"]["maximum"] == 200
+
 
 def test_empty_batch_writes_empty_manifest(
     tmp_path: Path,
@@ -125,6 +148,12 @@ def test_empty_batch_writes_empty_manifest(
     summary = json.loads(artifacts.summary_path.read_text(encoding="utf-8"))
     assert summary["total_discovered"] == 0
 
+    audit = json.loads(artifacts.dataset_audit_path.read_text(encoding="utf-8"))
+    assert audit["total_records"] == 0
+    assert audit["records_with_decode_metadata"] == 0
+    assert audit["records_without_decode_metadata"] == 0
+    assert audit["source_width_statistics"] is None
+
 
 def test_existing_run_artifacts_are_not_overwritten(
     tmp_path: Path,
@@ -137,6 +166,7 @@ def test_existing_run_artifacts_are_not_overwritten(
     )
     first_manifest = first.manifest_path.read_bytes()
     first_summary = first.summary_path.read_bytes()
+    first_audit = first.dataset_audit_path.read_bytes()
 
     with pytest.raises(
         ManifestWriteError,
@@ -149,6 +179,7 @@ def test_existing_run_artifacts_are_not_overwritten(
 
     assert first.manifest_path.read_bytes() == first_manifest
     assert first.summary_path.read_bytes() == first_summary
+    assert first.dataset_audit_path.read_bytes() == first_audit
 
 
 def test_serialization_failure_leaves_no_partial_run(
@@ -178,6 +209,30 @@ def test_serialization_failure_leaves_no_partial_run(
 
     assert not (runs_root / result.summary.run_id).exists()
 
+    assert list(runs_root.glob(f".{result.summary.run_id}.*")) == []
+
+
+def test_dataset_audit_failure_leaves_no_partial_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result, output_dir = _batch_result(tmp_path)
+
+    def fail_dataset_audit(result_value: object) -> object:
+        del result_value
+        raise ProvenanceError("simulated dataset audit failure")
+
+    monkeypatch.setattr(
+        "smart_beauty_resize.audit.build_dataset_audit_summary",
+        fail_dataset_audit,
+    )
+
+    with pytest.raises(ProvenanceError, match="simulated dataset audit failure"):
+        write_batch_artifacts(result, output_dir)
+
+    runs_root = output_dir / RUNS_DIRECTORY_NAME
+
+    assert not (runs_root / result.summary.run_id).exists()
     assert list(runs_root.glob(f".{result.summary.run_id}.*")) == []
 
 
