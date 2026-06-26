@@ -1,7 +1,8 @@
 [project]
 name = "smart-beauty-resize-preprocessor"
-version = "0.1.0"
-description = "Bootstrap package for smart beauty resize preprocessing utilities"
+version = "1.0.0"
+description = "Deterministic, auditable image resize preprocessing for Smart Beauty ML pipelines"
+readme = "README.md"
 authors = [
     { name = "Koray_Aydin", email = "138696794+KorayAydin3k@users.noreply.github.com" }
 ]
@@ -14,6 +15,9 @@ dependencies = [
     "rich>=15.0.0",
     "typer>=0.26.7",
 ]
+
+[project.urls]
+Repository = "https://github.com/KorayAydin3k/smart-beauty-resize-preprocessor"
 
 [project.scripts]
 smart-beauty-resize = "smart_beauty_resize.cli:main"
